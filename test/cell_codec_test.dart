@@ -9,9 +9,11 @@ void main() {
       expect(CellCodec.encode(DimensionType.string, null), '');
     });
 
-    test('number', () {
-      expect(CellCodec.encode(DimensionType.number, 42), '42');
-      expect(CellCodec.encode(DimensionType.number, 3.14), '3.14');
+    test('number stays numeric (no leading-quote in Sheets)', () {
+      expect(CellCodec.encode(DimensionType.number, 42), 42);
+      expect(CellCodec.encode(DimensionType.number, 3.14), 3.14);
+      // Stringy input is coerced if parseable.
+      expect(CellCodec.encode(DimensionType.number, '7'), 7);
     });
 
     test('date as YYYY-MM-DD', () {
@@ -29,9 +31,9 @@ void main() {
       );
     });
 
-    test('boolean', () {
-      expect(CellCodec.encode(DimensionType.boolean, true), 'true');
-      expect(CellCodec.encode(DimensionType.boolean, false), 'false');
+    test('boolean stays bool', () {
+      expect(CellCodec.encode(DimensionType.boolean, true), true);
+      expect(CellCodec.encode(DimensionType.boolean, false), false);
     });
   });
 

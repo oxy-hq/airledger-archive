@@ -1,20 +1,25 @@
 import '../models/view_schema.dart';
 
-/// Converts between typed Dart values and the strings the Sheets API exchanges.
+/// Converts between typed Dart values and the values the Sheets API exchanges.
 ///
-/// Sheets cells round-trip as `Object?` (typically String, num, or bool). We
-/// normalize to ISO 8601 for date/datetime so values are human-readable in the
-/// sheet and unambiguous when read back.
+/// We send native types (num, bool, String) where possible so Sheets stores
+/// them with the right cell type. Strings sent for numeric values would
+/// otherwise display a leading apostrophe (Sheets' "this looks numeric but is
+/// text" marker). Dates and datetimes are emitted as ISO strings — Sheets
+/// shows them as text, which is what we want for stable round-tripping.
 class CellCodec {
-  /// Converts a Dart value to the string form to write to Sheets.
-  static String encode(DimensionType type, Object? value) {
+  /// Converts a Dart value into the form to write to a Sheets cell. Returns
+  /// `num` for number dimensions, `bool` for boolean dimensions, and `String`
+  /// for everything else (including empty string for null).
+  static Object encode(DimensionType type, Object? value) {
     if (value == null) return '';
     switch (type) {
       case DimensionType.string:
         return value.toString();
       case DimensionType.number:
-        if (value is num) return value.toString();
-        return value.toString();
+        if (value is num) return value;
+        final parsed = num.tryParse(value.toString());
+        return parsed ?? value.toString();
       case DimensionType.date:
         if (value is DateTime) {
           final d = value;
@@ -27,8 +32,8 @@ class CellCodec {
         if (value is DateTime) return value.toIso8601String();
         return value.toString();
       case DimensionType.boolean:
-        if (value is bool) return value ? 'true' : 'false';
-        return value.toString();
+        if (value is bool) return value;
+        return value.toString().toLowerCase() == 'true';
     }
   }
 

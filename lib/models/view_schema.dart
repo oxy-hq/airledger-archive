@@ -10,7 +10,7 @@ library;
 
 enum DimensionType { string, number, date, datetime, boolean }
 
-enum WidgetType { text, longtext, number, date, datetime, dropdown }
+enum WidgetType { text, longtext, number, date, datetime, dropdown, autocomplete }
 
 enum EntityType { primary, foreign }
 
@@ -92,6 +92,16 @@ class Dimension {
   final InputSpec? input;
   final Derive? derive;
 
+  /// Conditional visibility: only show this dimension in the form when every
+  /// (key, value) pair here matches the form's current values. Used for
+  /// polymorphic records like cardio sets where treadmill-specific fields
+  /// should only appear when type=treadmill.
+  ///
+  /// Comparison is loose: dimension values are compared by `==` after
+  /// coercing both sides to their string form (handles num/string mismatches
+  /// from form vs YAML).
+  final Map<String, Object?>? showWhen;
+
   Dimension({
     required this.name,
     required this.type,
@@ -100,7 +110,19 @@ class Dimension {
     this.samples,
     this.input,
     this.derive,
+    this.showWhen,
   });
+
+  /// Whether this dimension should be visible in the form given the current
+  /// values map. Always visible when `show_when` is absent.
+  bool isVisibleGiven(Map<String, Object?> values) {
+    if (showWhen == null) return true;
+    for (final entry in showWhen!.entries) {
+      final actual = values[entry.key];
+      if (actual?.toString() != entry.value?.toString()) return false;
+    }
+    return true;
+  }
 }
 
 class InputSpec {
@@ -113,6 +135,11 @@ class InputSpec {
   final String? placeholder;
   final bool editable;
 
+  /// If true, the field renders a clock-icon suffix button that stamps the
+  /// current time (formatted like "3:54:00 PM") into the field on tap.
+  /// Useful for "Start Time"-style columns.
+  final bool nowButton;
+
   InputSpec({
     required this.widget,
     this.required = false,
@@ -122,6 +149,7 @@ class InputSpec {
     this.options,
     this.placeholder,
     this.editable = true,
+    this.nowButton = false,
   });
 }
 

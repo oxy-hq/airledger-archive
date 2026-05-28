@@ -4,11 +4,14 @@ import 'package:flutter/services.dart' show rootBundle;
 import '../models/view_schema.dart';
 import '../services/app_config.dart';
 import '../services/schema_loader.dart';
+import '../services/settings_store.dart';
 import '../services/sheets_repository.dart';
+import 'apps_screen.dart';
+import 'settings_screen.dart';
 import 'timeline_screen.dart';
 
-/// App entrypoint screen. Loads config + schemas, connects to Sheets, and
-/// presents the list of views.
+/// App entrypoint screen. Loads settings + config + schemas, connects to
+/// Sheets, and presents the list of views.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -26,67 +29,115 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<_Bootstrap> _initialize() async {
-    final config = await AppConfig.load();
+    final settings = await SettingsStore.load();
+    final assetConfig = await AppConfig.load();
+
+    // Settings overrides the bundled asset config; either falls back to the
+    // other if missing.
+    final spreadsheetId =
+        settings.spreadsheetId ?? assetConfig.spreadsheetId;
+
     final views = await SchemaLoader.loadAll();
     final keyJson = await rootBundle.loadString('assets/service-account.json');
     final repo = await SheetsRepository.connectFromKey(
-      defaultSpreadsheetId: config.spreadsheetId,
+      defaultSpreadsheetId: spreadsheetId,
       serviceAccountKeyJson: keyJson,
     );
     for (final view in views) {
       await repo.ensureSheet(view);
     }
-    return _Bootstrap(views: views, repository: repo);
+    return _Bootstrap(
+      views: views,
+      repository: repo,
+      settings: settings,
+    );
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const SettingsScreen()),
+    );
+    // Settings may have changed — reload bootstrap to pick up new
+    // spreadsheet id / appearance.
+    if (mounted) setState(() => _bootstrap = _initialize());
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Ledger'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => setState(() => _bootstrap = _initialize()),
-            tooltip: 'Reload schemas',
+    return FutureBuilder<_Bootstrap>(
+      future: _bootstrap,
+      builder: (context, snap) {
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Ledger'),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: () => setState(() => _bootstrap = _initialize()),
+                tooltip: 'Reload schemas',
+              ),
+              IconButton(
+                icon: const Icon(Icons.settings),
+                onPressed: _openSettings,
+                tooltip: 'Settings',
+              ),
+            ],
           ),
-        ],
-      ),
-      body: FutureBuilder<_Bootstrap>(
-        future: _bootstrap,
-        builder: (context, snap) {
-          if (snap.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return _ErrorView(error: snap.error.toString());
-          }
-          final data = snap.data!;
-          if (data.views.isEmpty) {
-            return const Center(child: Text('No views in assets/schemas/.'));
-          }
-          return ListView.separated(
-            itemCount: data.views.length,
-            separatorBuilder: (_, _) => const Divider(height: 1),
-            itemBuilder: (_, i) {
-              final view = data.views[i];
-              return ListTile(
-                title: Text(view.name),
-                subtitle: view.description == null ? null : Text(view.description!),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => TimelineScreen(
-                      view: view,
-                      repository: data.repository,
+          body: Builder(
+            builder: (context) {
+              if (snap.connectionState != ConnectionState.done) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snap.hasError) {
+                return _ErrorView(error: snap.error.toString());
+              }
+              final data = snap.data!;
+              if (data.views.isEmpty) {
+                return const Center(child: Text('No views available.'));
+              }
+              return ListView.separated(
+                itemCount: data.views.length + 1,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  if (i == data.views.length) {
+                    return ListTile(
+                      leading: const Icon(Icons.bar_chart),
+                      title: const Text('Apps'),
+                      subtitle:
+                          const Text('Interactive analytics from .app.yml'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => AppsScreen(
+                            views: data.views,
+                            repository: data.repository,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  final view = data.views[i];
+                  return ListTile(
+                    title: Text(view.name),
+                    subtitle: view.description == null
+                        ? null
+                        : Text(view.description!),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => TimelineScreen(
+                          view: view,
+                          repository: data.repository,
+                        ),
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
               );
             },
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -94,7 +145,12 @@ class _HomeScreenState extends State<HomeScreen> {
 class _Bootstrap {
   final List<ViewSchema> views;
   final SheetsRepository repository;
-  _Bootstrap({required this.views, required this.repository});
+  final Settings settings;
+  _Bootstrap({
+    required this.views,
+    required this.repository,
+    required this.settings,
+  });
 }
 
 class _ErrorView extends StatelessWidget {

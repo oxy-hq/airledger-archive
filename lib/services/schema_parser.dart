@@ -84,6 +84,12 @@ Dimension _parseDimension(YamlMap node) {
     derive: node['derive'] == null
         ? null
         : _parseDerive(node['derive'] as YamlMap),
+    showWhen: node['show_when'] == null
+        ? null
+        : <String, Object?>{
+            for (final entry in (node['show_when'] as YamlMap).entries)
+              entry.key.toString(): entry.value,
+          },
   );
 }
 
@@ -99,6 +105,7 @@ InputSpec _parseInput(YamlMap node) {
         : (node['options'] as YamlList).map((e) => e.toString()).toList(),
     placeholder: node['placeholder'] as String?,
     editable: (node['editable'] as bool?) ?? true,
+    nowButton: (node['now_button'] as bool?) ?? false,
   );
 }
 
@@ -172,6 +179,8 @@ WidgetType _parseWidgetType(String s) {
       return WidgetType.datetime;
     case 'dropdown':
       return WidgetType.dropdown;
+    case 'autocomplete':
+      return WidgetType.autocomplete;
     default:
       throw FormatException('Unknown widget type: $s');
   }

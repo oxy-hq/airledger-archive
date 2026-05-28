@@ -6,18 +6,27 @@ import '../services/sheets_repository.dart';
 import 'widgets/field_widgets.dart';
 
 /// Auto-generated entry form. Renders one input per editable dimension.
-/// In create mode (existing == null), applies input.default values.
-/// In edit mode, pre-fills from [existing] and saves via update().
+///
+/// Three modes:
+///   - **Create** (default): blank form with defaults from `input.default`.
+///     On save, calls `repository.create` and pops with `true`.
+///   - **Edit** (existing != null): pre-fills from `existing`. On save, calls
+///     `repository.update` and pops with `true`.
+///   - **Plan** (planMode == true): pre-fills from `existing`. On save, pops
+///     with the edited values map (Map<String, Object?>) so the caller can
+///     persist it locally instead of writing to the sheet.
 class FormScreen extends StatefulWidget {
   final ViewSchema view;
   final SheetsRepository repository;
   final Record? existing;
+  final bool planMode;
 
   const FormScreen({
     super.key,
     required this.view,
     required this.repository,
     this.existing,
+    this.planMode = false,
   });
 
   bool get isEdit => existing != null;
@@ -46,9 +55,12 @@ class _FormScreenState extends State<FormScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final titlePrefix = widget.planMode
+        ? 'Edit planned'
+        : (widget.isEdit ? 'Edit' : 'New');
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.isEdit ? "Edit" : "New"} ${widget.view.name}'),
+        title: Text('$titlePrefix ${widget.view.name}'),
         actions: [
           IconButton(
             icon: const Icon(Icons.check),
@@ -62,14 +74,16 @@ class _FormScreenState extends State<FormScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (final dim in widget.view.editableDimensions) ...[
-              buildFieldWidget(
-                dim: dim,
-                value: _record[dim.name],
-                onChanged: (v) => setState(() => _record[dim.name] = v),
-              ),
-              const SizedBox(height: 12),
-            ],
+            for (final dim in widget.view.editableDimensions)
+              if (dim.isVisibleGiven(_record)) ...[
+                buildFieldWidget(
+                  key: ValueKey(dim.name),
+                  dim: dim,
+                  value: _record[dim.name],
+                  onChanged: (v) => setState(() => _record[dim.name] = v),
+                ),
+                const SizedBox(height: 12),
+              ],
             if (_saving) const Center(child: CircularProgressIndicator()),
           ],
         ),
@@ -78,8 +92,17 @@ class _FormScreenState extends State<FormScreen> {
   }
 
   Future<void> _save() async {
+    // Drop values for fields hidden by show_when — they're stale (e.g. user
+    // entered treadmill speed, then switched type to stairmaster) and would
+    // otherwise pollute the row.
+    for (final dim in widget.view.editableDimensions) {
+      if (!dim.isVisibleGiven(_record)) {
+        _record.remove(dim.name);
+      }
+    }
     final missing = <String>[];
     for (final dim in widget.view.editableDimensions) {
+      if (!dim.isVisibleGiven(_record)) continue;
       if (dim.input?.required == true && _record[dim.name] == null) {
         missing.add(dim.name);
       }
@@ -93,6 +116,10 @@ class _FormScreenState extends State<FormScreen> {
 
     setState(() => _saving = true);
     try {
+      if (widget.planMode) {
+        Navigator.of(context).pop(_record);
+        return;
+      }
       applyDerives(widget.view, _record);
       if (widget.isEdit) {
         await widget.repository.update(widget.view, _record);

@@ -20,6 +20,7 @@ Object? resolveDefault(Dimension dim) {
 
 /// Dispatches to the correct field widget for [dim.input.widget].
 Widget buildFieldWidget({
+  Key? key,
   required Dimension dim,
   required Object? value,
   required ValueChanged<Object?> onChanged,
@@ -27,18 +28,30 @@ Widget buildFieldWidget({
   final widget = dim.input?.widget ?? _widgetForType(dim.type);
   switch (widget) {
     case WidgetType.text:
-      return _TextFieldWidget(dim: dim, value: value, onChanged: onChanged);
+      return _TextFieldWidget(
+        key: key,
+        dim: dim,
+        value: value,
+        onChanged: onChanged,
+      );
     case WidgetType.longtext:
       return _TextFieldWidget(
+        key: key,
         dim: dim,
         value: value,
         onChanged: onChanged,
         maxLines: 4,
       );
     case WidgetType.number:
-      return _NumberFieldWidget(dim: dim, value: value, onChanged: onChanged);
+      return _NumberFieldWidget(
+        key: key,
+        dim: dim,
+        value: value,
+        onChanged: onChanged,
+      );
     case WidgetType.date:
       return _DateFieldWidget(
+        key: key,
         dim: dim,
         value: value,
         onChanged: onChanged,
@@ -46,13 +59,26 @@ Widget buildFieldWidget({
       );
     case WidgetType.datetime:
       return _DateFieldWidget(
+        key: key,
         dim: dim,
         value: value,
         onChanged: onChanged,
         includeTime: true,
       );
     case WidgetType.dropdown:
-      return _DropdownFieldWidget(dim: dim, value: value, onChanged: onChanged);
+      return _DropdownFieldWidget(
+        key: key,
+        dim: dim,
+        value: value,
+        onChanged: onChanged,
+      );
+    case WidgetType.autocomplete:
+      return _AutocompleteFieldWidget(
+        key: key,
+        dim: dim,
+        value: value,
+        onChanged: onChanged,
+      );
   }
 }
 
@@ -82,6 +108,7 @@ class _TextFieldWidget extends StatefulWidget {
   final int maxLines;
 
   const _TextFieldWidget({
+    super.key,
     required this.dim,
     required this.value,
     required this.onChanged,
@@ -109,6 +136,7 @@ class _TextFieldWidgetState extends State<_TextFieldWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final nowButton = widget.dim.input?.nowButton ?? false;
     return TextField(
       controller: _controller,
       maxLines: widget.maxLines,
@@ -117,6 +145,17 @@ class _TextFieldWidgetState extends State<_TextFieldWidget> {
         hintText: widget.dim.input?.placeholder,
         helperText: widget.dim.description,
         border: const OutlineInputBorder(),
+        suffixIcon: nowButton
+            ? IconButton(
+                icon: const Icon(Icons.schedule),
+                tooltip: 'Now',
+                onPressed: () {
+                  final now = DateFormat('h:mm:ss a').format(DateTime.now());
+                  _controller.text = now;
+                  widget.onChanged(now);
+                },
+              )
+            : null,
       ),
       onChanged: (s) => widget.onChanged(s.isEmpty ? null : s),
     );
@@ -129,6 +168,7 @@ class _NumberFieldWidget extends StatefulWidget {
   final ValueChanged<Object?> onChanged;
 
   const _NumberFieldWidget({
+    super.key,
     required this.dim,
     required this.value,
     required this.onChanged,
@@ -184,6 +224,7 @@ class _DateFieldWidget extends StatelessWidget {
   final bool includeTime;
 
   const _DateFieldWidget({
+    super.key,
     required this.dim,
     required this.value,
     required this.onChanged,
@@ -243,12 +284,89 @@ class _DateFieldWidget extends StatelessWidget {
   }
 }
 
+/// Free-form text input with suggestions from `dim.samples`. Lets the user
+/// pick from a known list or type a new value (ad hoc). Matching is
+/// substring + case-insensitive; the full list shows when the field is empty
+/// or freshly focused.
+class _AutocompleteFieldWidget extends StatelessWidget {
+  final Dimension dim;
+  final Object? value;
+  final ValueChanged<Object?> onChanged;
+
+  const _AutocompleteFieldWidget({
+    super.key,
+    required this.dim,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final samples = dim.samples ?? const <String>[];
+    return Autocomplete<String>(
+      initialValue: TextEditingValue(text: value?.toString() ?? ''),
+      optionsBuilder: (input) {
+        final q = input.text.trim().toLowerCase();
+        if (q.isEmpty) return samples.take(50);
+        return samples
+            .where((s) => s.toLowerCase().contains(q))
+            .take(50);
+      },
+      onSelected: (s) => onChanged(s.isEmpty ? null : s),
+      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+        return TextField(
+          controller: controller,
+          focusNode: focusNode,
+          decoration: InputDecoration(
+            labelText: _labelFor(dim),
+            hintText: dim.input?.placeholder,
+            helperText: dim.description,
+            border: const OutlineInputBorder(),
+          ),
+          onChanged: (s) => onChanged(s.isEmpty ? null : s),
+          onSubmitted: (_) => onFieldSubmitted(),
+        );
+      },
+      optionsViewBuilder: (context, onSelected, options) {
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240, maxWidth: 400),
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: options.length,
+                itemBuilder: (context, index) {
+                  final option = options.elementAt(index);
+                  return InkWell(
+                    onTap: () => onSelected(option),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      child: Text(option),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _DropdownFieldWidget extends StatelessWidget {
   final Dimension dim;
   final Object? value;
   final ValueChanged<Object?> onChanged;
 
   const _DropdownFieldWidget({
+    super.key,
     required this.dim,
     required this.value,
     required this.onChanged,

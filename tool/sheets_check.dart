@@ -66,7 +66,7 @@ Future<void> main() async {
   final rows = await repo.list(meals, onDate: todayDate);
   print('listed ${rows.length} rows for today');
 
-  await repo.delete(meals, probe['id'] as String);
+  await repo.delete(meals, probe);
   print('deleted probe');
 
   print('\nALL OK');

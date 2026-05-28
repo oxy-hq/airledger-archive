@@ -16,8 +16,8 @@ typedef Record = Map<String, Object?>;
 
 /// Key used to stash the zero-based data row index on records loaded from
 /// the sheet, so [SheetsRepository.update] can identify them even when id
-/// is missing.
-const _rowIndexKey = '__row';
+/// is missing. Public so callers can bump indexes after an insert-at-top.
+const rowIndexKey = '__row';
 
 /// CRUD over Google Sheets. Each [ViewSchema] picks a spreadsheet (its own
 /// `spreadsheet_id` override or the default) and a tab (its `table`). Row 1
@@ -119,7 +119,7 @@ class SheetsRepository {
     final records = <Record>[];
     for (var i = 1; i < values.length; i++) {
       final record = _rowToRecord(view, headers, values[i]);
-      record[_rowIndexKey] = i - 1; // zero-based data row
+      record[rowIndexKey] = i - 1; // zero-based data row
       records.add(record);
     }
 
@@ -131,19 +131,36 @@ class SheetsRepository {
             v.month == onDate.month &&
             v.day == onDate.day;
       }).toList();
+      // Within a date, sort ascending by the plannable log field (start_time)
+      // so the first set of the day appears first. Fall back to sheet row
+      // order if the view has no plannable.
+      final logField = view.plannable?.logField;
       filtered.sort((a, b) {
-        final av = a[view.dateField] as DateTime?;
-        final bv = b[view.dateField] as DateTime?;
-        if (av == null || bv == null) return 0;
-        return bv.compareTo(av);
+        if (logField != null) {
+          final av = a[logField]?.toString() ?? '';
+          final bv = b[logField]?.toString() ?? '';
+          if (av.isEmpty && bv.isEmpty) return 0;
+          if (av.isEmpty) return 1; // missing times sort last
+          if (bv.isEmpty) return -1;
+          return av.compareTo(bv);
+        }
+        final ar = a[rowIndexKey] as int? ?? 0;
+        final br = b[rowIndexKey] as int? ?? 0;
+        return ar.compareTo(br);
       });
       return filtered;
     }
     return records;
   }
 
-  /// Appends a new record. Assigns a UUID for `id` if the view has an id
-  /// dimension and the record doesn't already have one.
+  /// Inserts a new record at the top of the data section (sheet row 2, right
+  /// below the header). Assigns a UUID for `id` if the view has an id
+  /// dimension and the record doesn't already have one. The returned record
+  /// carries `__row = 0` so the caller can use it without round-tripping.
+  ///
+  /// Note: every existing in-memory record's `__row` index becomes stale by
+  /// -1 after this call. Callers that maintain a list of records must bump
+  /// their `__row` values by +1 (see [shiftRowIndexes]).
   Future<Record> create(ViewSchema view, Record record) async {
     final spreadsheetId = _spreadsheetIdFor(view);
     final headers = await _ensureHeaders(view);
@@ -152,19 +169,50 @@ class SheetsRepository {
       toWrite['id'] ??= _uuid.v4();
     }
 
-    final row = headers.map((h) {
+    final row = headers.map<Object>((h) {
       final dim = view.dimensionByExpr(h);
       if (dim == null) return '';
       return CellCodec.encode(dim.type, toWrite[dim.name]);
     }).toList();
 
-    await _api.spreadsheets.values.append(
+    final sheetId = await _sheetIdFor(spreadsheetId, view.table);
+    await _api.spreadsheets.batchUpdate(
+      sheets.BatchUpdateSpreadsheetRequest(
+        requests: [
+          sheets.Request(
+            insertDimension: sheets.InsertDimensionRequest(
+              range: sheets.DimensionRange(
+                sheetId: sheetId,
+                dimension: 'ROWS',
+                startIndex: 1,
+                endIndex: 2,
+              ),
+              inheritFromBefore: false,
+            ),
+          ),
+        ],
+      ),
+      spreadsheetId,
+    );
+    await _api.spreadsheets.values.update(
       sheets.ValueRange(values: [row]),
       spreadsheetId,
-      "'${view.table}'!A1",
+      "'${view.table}'!A2",
       valueInputOption: 'RAW',
     );
+    toWrite[rowIndexKey] = 0;
     return toWrite;
+  }
+
+  /// In-memory shift of `__row` indexes on a list of records. After a
+  /// successful [create] (insert-at-top), call this with `by: 1` on every
+  /// previously-loaded record so subsequent updates/deletes resolve to the
+  /// correct sheet row.
+  static void shiftRowIndexes(Iterable<Record> records, {required int by}) {
+    for (final r in records) {
+      final v = r[rowIndexKey];
+      if (v is int) r[rowIndexKey] = v + by;
+    }
   }
 
   /// Updates an existing record. Resolution order:
@@ -181,7 +229,7 @@ class SheetsRepository {
     final headers = await _ensureHeaders(view);
 
     int? rowIndex;
-    final stashed = record[_rowIndexKey];
+    final stashed = record[rowIndexKey];
     if (stashed is int) {
       rowIndex = stashed;
     } else {
@@ -204,14 +252,15 @@ class SheetsRepository {
 
     final existingRow = await _readRow(spreadsheetId, view.table, rowIndex);
 
-    final row = <String>[];
+    final row = <Object>[];
     for (var i = 0; i < headers.length; i++) {
       final h = headers[i];
       final dim = view.dimensionByExpr(h);
       if (dim != null) {
         row.add(CellCodec.encode(dim.type, record[dim.name]));
       } else {
-        row.add(i < existingRow.length ? existingRow[i].toString() : '');
+        // Preserve unknown columns verbatim (whatever type the API gave us).
+        row.add(i < existingRow.length ? (existingRow[i] ?? '') : '');
       }
     }
 
@@ -223,10 +272,21 @@ class SheetsRepository {
     );
   }
 
-  /// Deletes the record with the given [id] by removing its sheet row.
-  Future<void> delete(ViewSchema view, String id) async {
+  /// Deletes [record]'s sheet row. Resolution order mirrors [update]:
+  /// the stashed `__row` index from [list], then falling back to lookup by
+  /// `id`. Returns silently if the row can't be located.
+  Future<void> delete(ViewSchema view, Record record) async {
     final spreadsheetId = _spreadsheetIdFor(view);
-    final rowIndex = await _findRowIndex(view, id);
+    int? rowIndex;
+    final stashed = record[rowIndexKey];
+    if (stashed is int) {
+      rowIndex = stashed;
+    } else {
+      final id = record['id']?.toString();
+      if (id != null && id.isNotEmpty) {
+        rowIndex = await _findRowIndex(view, id);
+      }
+    }
     if (rowIndex == null) return;
     final sheetId = await _sheetIdFor(spreadsheetId, view.table);
     await _api.spreadsheets.batchUpdate(

@@ -16,13 +16,3 @@ Object logNowValue(LogFormat format, [DateTime? now]) {
   }
 }
 
-/// Whether [record] is "planned" for the view — i.e. its log_field is empty
-/// or missing. Returns false if the view isn't plannable.
-bool isPlanned(ViewSchema view, Map<String, Object?> record) {
-  final p = view.plannable;
-  if (p == null) return false;
-  final v = record[p.logField];
-  if (v == null) return true;
-  if (v is String && v.isEmpty) return true;
-  return false;
-}
