@@ -527,9 +527,21 @@ class _TimelineScreenState extends State<TimelineScreen> {
     }
   }
 
-  /// Renders the post-log Jinja prompt with the row context, calls the
-  /// model, stores the response in the cache. Fire-and-forget — the
+  /// Renders the post-log Jinja prompt with row + historical context, calls
+  /// the model, stores the response in the cache. Fire-and-forget — the
   /// timeline rebuilds via the cache listener when the response arrives.
+  ///
+  /// Jinja context exposed to the prompt:
+  ///   - `row`            the just-logged record (Map)
+  ///   - `view.name`, `view.description`
+  ///   - `today`          rows logged today (this view) — list of Maps
+  ///   - `last_7_days`    rows in last 7 calendar days
+  ///   - `last_30_days`   rows in last 30 calendar days
+  ///   - `recent`         most-recent 50 rows regardless of date
+  ///   - `all`            every row for this view
+  ///   - `last_n_days(n)` callable — rows in last n calendar days
+  ///   - `last_n_weeks(n)` callable — rows in last n*7 calendar days
+  ///   - `last_n_months(n)` callable — rows in last n*30 calendar days
   void _runPostLogHook(
     PostLogHook hook,
     Record row,
@@ -541,7 +553,66 @@ class _TimelineScreenState extends State<TimelineScreen> {
     cache.markPending(rowId);
     () async {
       try {
-        final env = Environment();
+        final dateField = widget.view.dateField;
+
+        // Pull all history for this view (best-effort: empty if it fails so
+        // the prompt still renders rather than the hook silently dropping).
+        List<Record> allRows = [];
+        try {
+          allRows = await widget.repository.list(widget.view);
+        } catch (_) {
+          allRows = [];
+        }
+
+        // Sort newest-first by dateField (rows without a parseable date sink
+        // to the bottom). Stable enough for "recent" / iteration semantics.
+        DateTime? rowDay(Record r) {
+          if (dateField == null) return null;
+          final v = r[dateField];
+          if (v is DateTime) return DateTime(v.year, v.month, v.day);
+          if (v is String) {
+            final d = DateTime.tryParse(v);
+            if (d != null) return DateTime(d.year, d.month, d.day);
+          }
+          return null;
+        }
+
+        allRows.sort((a, b) {
+          final da = rowDay(a);
+          final db = rowDay(b);
+          if (da == null && db == null) return 0;
+          if (da == null) return 1;
+          if (db == null) return -1;
+          return db.compareTo(da);
+        });
+
+        final now = DateTime.now();
+        final todayDay = DateTime(now.year, now.month, now.day);
+
+        // "Last N days" = the trailing N calendar days *including today*.
+        // n=1 → today only; n=7 → today + 6 prior days.
+        List<Record> lastNDays(int n) {
+          if (dateField == null || n <= 0) return const [];
+          final cutoff = todayDay.subtract(Duration(days: n - 1));
+          return allRows.where((r) {
+            final d = rowDay(r);
+            return d != null && !d.isBefore(cutoff);
+          }).toList();
+        }
+
+        final todayRows = lastNDays(1);
+        final last7 = lastNDays(7);
+        final last30 = lastNDays(30);
+        final recent = allRows.take(50).toList();
+
+        final env = Environment(
+          globals: {
+            'last_n_days': ([Object? n]) => lastNDays(_coerceInt(n, 7)),
+            'last_n_weeks': ([Object? n]) => lastNDays(_coerceInt(n, 1) * 7),
+            'last_n_months': ([Object? n]) =>
+                lastNDays(_coerceInt(n, 1) * 30),
+          },
+        );
         final tpl = env.fromString(hook.prompt);
         final rendered = tpl.render({
           'row': row,
@@ -549,6 +620,11 @@ class _TimelineScreenState extends State<TimelineScreen> {
             'name': widget.view.name,
             'description': widget.view.description,
           },
+          'today': todayRows,
+          'last_7_days': last7,
+          'last_30_days': last30,
+          'recent': recent,
+          'all': allRows,
         });
         final response = await llm.complete(hook.model, rendered);
         cache.put(rowId, response);
@@ -557,6 +633,18 @@ class _TimelineScreenState extends State<TimelineScreen> {
       }
     }();
   }
+}
+
+/// Coerces a value handed to a Jinja callable (anything — int, num, String,
+/// null) into a Dart int. Falls back to [fallback] when missing or
+/// uncoercible. Used so prompts like `last_n_days(7)` and `last_n_days("7")`
+/// both work.
+int _coerceInt(Object? v, int fallback) {
+  if (v == null) return fallback;
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v) ?? fallback;
+  return fallback;
 }
 
 String _titleFor(ViewSchema view, Map<String, Object?> record) =>
