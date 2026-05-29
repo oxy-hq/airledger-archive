@@ -170,7 +170,7 @@ sibling concerns sharing `config.yml`:
     apps/*.app.yml      # ledger apps (analytics built on the CRUD substrate)
 ```
 
-`ledger.yaml` adds one new field to point at the shared config:
+`ledger.yaml` adds one optional field to point at the shared config:
 
 ```yaml
 app_name: "Poke House Inventory"
@@ -178,7 +178,8 @@ package_id: com.robertyi.pokehouse
 icon: assets/icon.png
 
 # Path to the shared oxy config — relative to ledger.yaml.
-# If omitted, ledger falls back to its bundled sheets-only behavior.
+# If omitted, ledger walks up from ledger.yaml's directory looking for
+# a config.yml (see "Config discovery" below).
 oxy_config: ../oxy/config.yml
 
 # Optional: which database from config.yml to use when a view doesn't
@@ -188,9 +189,32 @@ default_database: clickhouse
 ```
 
 The `brand.dart` CLI grows a small responsibility: when it syncs assets,
-it also copies (or symlinks) the referenced `config.yml` into
-`assets/config.yml`, so the bundled APK has everything it needs at
-runtime.
+it also copies the resolved `config.yml` into `assets/config.yml`, so the
+bundled APK has everything it needs at runtime.
+
+### Config discovery (mirrors airlayer)
+
+Airlayer walks up from `cwd` looking for `config.yml`
+(`~/repos/airlayer/src/cli/mod.rs:find_project_root`). Explicit `--config`
+always wins; otherwise the first ancestor directory containing
+`config.yml` is the project root.
+
+Ledger uses the same logic, with one small extension: at each ancestor
+level, look for *either* `./config.yml` or `./oxy/config.yml`. That
+covers both layouts — config-at-customer-root *and* config-nested-under
+`oxy/`, which is the convention in `customer-repos/<customer>-oxy/`.
+
+```
+Starting from /<ledger.yaml dir>/, at each level:
+  ./config.yml      ?  → if found, that's the project root.
+  ./oxy/config.yml  ?  → if found, the *enclosing* dir is the project
+                          root, and oxy/ is the data-tier subdir.
+  cd ..
+```
+
+Explicit `oxy_config:` in `ledger.yaml` (or `--config` on the CLI) always
+short-circuits the search. The discovery code lives at
+`lib/services/oxy_config_discovery.dart`.
 
 ### Why monorepo (oxy/ + ledger/ siblings)
 
