@@ -4,14 +4,22 @@ import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 import 'package:path_provider/path_provider.dart';
 
 import '../models/view_schema.dart';
+import 'input_parser.dart';
 import 'remote_sync.dart';
 import 'schema_parser.dart';
 
-/// Loads `.view.yml` files. Priority order:
-/// 1. Local cache (`<documents>/schemas/*.view.yml`) — populated by
+/// Loads `.view.yml` files paired with `.input.yml` overlays.
+///
+/// Priority order per file:
+/// 1. Local cache (`<documents>/schemas/`) — populated by
 ///    [RemoteSync.refresh] from a configured GitHub repo.
-/// 2. Bundled assets (`assets/schemas/*.view.yml`) — fallback when no remote
-///    sync has run.
+/// 2. Bundled assets (`assets/schemas/`).
+///
+/// For each `<name>.view.yml` found, the loader looks for a paired
+/// `<name>.input.yml` in the same directory. If present, the overlay is
+/// applied to populate input-layer fields. If absent, the view loads
+/// with only the semantic-layer fields (suitable for read-only / analytics
+/// views).
 class SchemaLoader {
   static const _schemaAssetPrefix = 'assets/schemas/';
 
@@ -25,18 +33,28 @@ class SchemaLoader {
     final docs = await getApplicationDocumentsDirectory();
     final dir = Directory('${docs.path}/${RemoteSync.schemasDirName}');
     if (!dir.existsSync()) return const [];
-    final files = dir
+    final viewFiles = dir
         .listSync()
         .whereType<File>()
         .where((f) => f.path.endsWith('.view.yml'))
         .toList();
-    if (files.isEmpty) return const [];
+    if (viewFiles.isEmpty) return const [];
     final views = <ViewSchema>[];
-    for (final f in files) {
+    for (final viewFile in viewFiles) {
       try {
-        views.add(parseViewSchema(f.readAsStringSync()));
+        final view = parseViewSchema(viewFile.readAsStringSync());
+        // Look for paired .input.yml
+        final inputPath =
+            viewFile.path.replaceAll(RegExp(r'\.view\.yml$'), '.input.yml');
+        final inputFile = File(inputPath);
+        if (inputFile.existsSync()) {
+          final overlay = parseInputOverlay(inputFile.readAsStringSync());
+          views.add(applyInputOverlay(view, overlay));
+        } else {
+          views.add(view);
+        }
       } catch (e) {
-        throw SchemaLoadException('Failed to parse ${f.path}: $e');
+        throw SchemaLoadException('Failed to parse ${viewFile.path}: $e');
       }
     }
     views.sort((a, b) => a.name.compareTo(b.name));
@@ -45,8 +63,8 @@ class SchemaLoader {
 
   static Future<List<ViewSchema>> _loadFromAssets() async {
     final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-    final viewPaths = manifest
-        .listAssets()
+    final allAssets = manifest.listAssets().toSet();
+    final viewPaths = allAssets
         .where((k) =>
             k.startsWith(_schemaAssetPrefix) && k.endsWith('.view.yml'))
         .toList();
@@ -55,7 +73,17 @@ class SchemaLoader {
     for (final path in viewPaths) {
       final raw = await rootBundle.loadString(path);
       try {
-        views.add(parseViewSchema(raw));
+        final view = parseViewSchema(raw);
+        // Paired .input.yml lookup
+        final inputPath =
+            path.replaceAll(RegExp(r'\.view\.yml$'), '.input.yml');
+        if (allAssets.contains(inputPath)) {
+          final inputRaw = await rootBundle.loadString(inputPath);
+          final overlay = parseInputOverlay(inputRaw);
+          views.add(applyInputOverlay(view, overlay));
+        } else {
+          views.add(view);
+        }
       } catch (e) {
         throw SchemaLoadException('Failed to parse $path: $e');
       }

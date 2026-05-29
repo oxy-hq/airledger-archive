@@ -1,12 +1,25 @@
-/// Pure-Dart YAML → [ViewSchema] parser. No Flutter imports so the same
-/// code is usable from `dart run` CLI tools and from the Flutter runtime.
+/// Pure-Dart YAML → [ViewSchema] parser for the semantic layer.
+///
+/// Recognizes ONLY semantic-layer fields:
+///   name, description, datasource, table
+///   entities, dimensions (name/type/expr/description), measures
+///
+/// Input-layer fields (`input:`, `samples:`, `derive:`, `show_when:`,
+/// `plannable:`, `list_display:`, `date_field:`, `spreadsheet_id:`)
+/// are silently ignored if present — they live in a paired
+/// `<name>.input.yml` file. See `input_parser.dart` and
+/// `docs/oxy-compatibility.md`.
+///
+/// No Flutter imports so the same code is usable from `dart run` tools.
 library;
 
 import 'package:yaml/yaml.dart';
 
 import '../models/view_schema.dart';
 
-/// Parses raw YAML text into a [ViewSchema].
+/// Parses raw YAML text into a [ViewSchema] with empty input-layer fields.
+/// Apply a [InputOverlay] from the paired `.input.yml` via
+/// `applyInputOverlay` to populate them.
 ViewSchema parseViewSchema(String yamlText) {
   final node = loadYaml(yamlText);
   if (node is! YamlMap) {
@@ -22,38 +35,12 @@ ViewSchema _parseView(YamlMap node) {
     description: node['description'] as String?,
     datasource: (node['datasource'] as String?) ?? 'gsheets',
     table: (node['table'] as String?) ?? name,
-    dateField: node['date_field'] as String?,
-    spreadsheetId: node['spreadsheet_id'] as String?,
     entities: _parseList(node['entities'], _parseEntity),
     dimensions: _parseList(node['dimensions'], _parseDimension),
     measures: _parseList(node['measures'], _parseMeasure),
-    listDisplay: node['list_display'] == null
-        ? null
-        : _parseListDisplay(node['list_display'] as YamlMap),
-    plannable: node['plannable'] == null
-        ? null
-        : _parsePlannable(node['plannable'] as YamlMap),
+    // Input-layer fields are intentionally NOT read here. They're populated
+    // when a `.input.yml` overlay is applied.
   );
-}
-
-Plannable _parsePlannable(YamlMap node) {
-  return Plannable(
-    logField: _requireString(node, 'log_field'),
-    logFormat: _parseLogFormat(_requireString(node, 'log_format')),
-  );
-}
-
-LogFormat _parseLogFormat(String s) {
-  switch (s) {
-    case 'time_string':
-      return LogFormat.timeString;
-    case 'iso_time':
-      return LogFormat.isoTime;
-    case 'iso_datetime':
-      return LogFormat.isoDateTime;
-    default:
-      throw FormatException('Unknown log format: $s');
-  }
 }
 
 Entity _parseEntity(YamlMap node) {
@@ -77,42 +64,7 @@ Dimension _parseDimension(YamlMap node) {
     type: _parseDimensionType(_requireString(node, 'type')),
     expr: (node['expr'] as String?) ?? _requireString(node, 'name'),
     description: node['description'] as String?,
-    samples: node['samples'] == null
-        ? null
-        : (node['samples'] as YamlList).map((e) => e.toString()).toList(),
-    input: node['input'] == null ? null : _parseInput(node['input'] as YamlMap),
-    derive: node['derive'] == null
-        ? null
-        : _parseDerive(node['derive'] as YamlMap),
-    showWhen: node['show_when'] == null
-        ? null
-        : <String, Object?>{
-            for (final entry in (node['show_when'] as YamlMap).entries)
-              entry.key.toString(): entry.value,
-          },
-  );
-}
-
-InputSpec _parseInput(YamlMap node) {
-  return InputSpec(
-    widget: _parseWidgetType((node['widget'] as String?) ?? 'text'),
-    required: (node['required'] as bool?) ?? false,
-    defaultValue: node['default'],
-    min: node['min'] as num?,
-    max: node['max'] as num?,
-    options: node['options'] == null
-        ? null
-        : (node['options'] as YamlList).map((e) => e.toString()).toList(),
-    placeholder: node['placeholder'] as String?,
-    editable: (node['editable'] as bool?) ?? true,
-    nowButton: (node['now_button'] as bool?) ?? false,
-  );
-}
-
-Derive _parseDerive(YamlMap node) {
-  return Derive(
-    from: _requireString(node, 'from'),
-    format: _parseDeriveFormat(_requireString(node, 'format')),
+    // input/samples/derive/show_when intentionally NOT read — overlay only.
   );
 }
 
@@ -122,13 +74,6 @@ Measure _parseMeasure(YamlMap node) {
     type: _parseMeasureType(_requireString(node, 'type')),
     expr: node['expr'] as String?,
     description: node['description'] as String?,
-  );
-}
-
-ListDisplay _parseListDisplay(YamlMap node) {
-  return ListDisplay(
-    title: _requireString(node, 'title'),
-    subtitle: node['subtitle'] as String?,
   );
 }
 
@@ -165,27 +110,6 @@ DimensionType _parseDimensionType(String s) {
   }
 }
 
-WidgetType _parseWidgetType(String s) {
-  switch (s) {
-    case 'text':
-      return WidgetType.text;
-    case 'longtext':
-      return WidgetType.longtext;
-    case 'number':
-      return WidgetType.number;
-    case 'date':
-      return WidgetType.date;
-    case 'datetime':
-      return WidgetType.datetime;
-    case 'dropdown':
-      return WidgetType.dropdown;
-    case 'autocomplete':
-      return WidgetType.autocomplete;
-    default:
-      throw FormatException('Unknown widget type: $s');
-  }
-}
-
 EntityType _parseEntityType(String s) {
   switch (s) {
     case 'primary':
@@ -213,20 +137,5 @@ MeasureType _parseMeasureType(String s) {
       return MeasureType.countDistinct;
     default:
       throw FormatException('Unknown measure type: $s');
-  }
-}
-
-DeriveFormat _parseDeriveFormat(String s) {
-  switch (s) {
-    case 'weekday_long':
-      return DeriveFormat.weekdayLong;
-    case 'weekday_short':
-      return DeriveFormat.weekdayShort;
-    case 'iso_date':
-      return DeriveFormat.isoDate;
-    case 'iso_datetime':
-      return DeriveFormat.isoDateTime;
-    default:
-      throw FormatException('Unknown derive format: $s');
   }
 }

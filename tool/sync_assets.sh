@@ -16,10 +16,18 @@ CONFIG_SRC="${CONFIG_SRC:-$HOME/.config/ledger/config.yaml}"
 
 mkdir -p assets/schemas assets/templates assets/apps
 
-# Schemas: clear and recopy so deletions in the source propagate
-rm -f assets/schemas/*.view.yml
+# Schemas: clear and recopy so deletions in the source propagate. Copies
+# paired .input.yml files alongside their .view.yml siblings.
+rm -f assets/schemas/*.view.yml assets/schemas/*.input.yml
 cp "$SCHEMAS_SRC"/*.view.yml assets/schemas/
-echo "synced $(ls assets/schemas/*.view.yml | wc -l | tr -d ' ') schema(s) from $SCHEMAS_SRC"
+# .input.yml are optional — skip the copy if there aren't any.
+shopt -s nullglob 2>/dev/null || true
+input_files=("$SCHEMAS_SRC"/*.input.yml)
+if [ ${#input_files[@]} -gt 0 ] && [ -e "${input_files[0]}" ]; then
+  cp "$SCHEMAS_SRC"/*.input.yml assets/schemas/
+fi
+echo "synced $(ls assets/schemas/*.view.yml 2>/dev/null | wc -l | tr -d ' ') view(s)"\
+  " + $(ls assets/schemas/*.input.yml 2>/dev/null | wc -l | tr -d ' ') input overlay(s) from $SCHEMAS_SRC"
 
 # Templates: mirror the templates/<view>/<name>.yml structure
 rm -rf assets/templates

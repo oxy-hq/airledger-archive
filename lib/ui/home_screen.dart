@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../models/view_schema.dart';
 import '../services/app_config.dart';
@@ -31,6 +32,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<_Bootstrap> _initialize() async {
     final settings = await SettingsStore.load();
     final assetConfig = await AppConfig.load();
+    final packageInfo = await PackageInfo.fromPlatform();
 
     // Settings overrides the bundled asset config; either falls back to the
     // other if missing.
@@ -50,6 +52,7 @@ class _HomeScreenState extends State<HomeScreen> {
       views: views,
       repository: repo,
       settings: settings,
+      appName: packageInfo.appName,
     );
   }
 
@@ -67,9 +70,10 @@ class _HomeScreenState extends State<HomeScreen> {
     return FutureBuilder<_Bootstrap>(
       future: _bootstrap,
       builder: (context, snap) {
+        final appName = snap.data?.appName ?? 'Ledger';
         return Scaffold(
           appBar: AppBar(
-            title: const Text('Ledger'),
+            title: Text(appName),
             actions: [
               IconButton(
                 icon: const Icon(Icons.refresh),
@@ -146,10 +150,16 @@ class _Bootstrap {
   final List<ViewSchema> views;
   final SheetsRepository repository;
   final Settings settings;
+
+  /// OS-level app label (from strings.xml, which brand.dart writes per
+  /// `app_name:` in the schemas repo's `ledger.yaml`).
+  final String appName;
+
   _Bootstrap({
     required this.views,
     required this.repository,
     required this.settings,
+    required this.appName,
   });
 }
 

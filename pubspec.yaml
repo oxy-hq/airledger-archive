@@ -23,6 +23,7 @@ dependencies:
   sqflite: ^2.4.0
   ffi: ^2.1.0
   http: ^1.2.0
+  package_info_plus: ^8.0.0
   airlayer:
     path: ../airlayer/sdk-dart
   fl_chart: ^0.69.0
