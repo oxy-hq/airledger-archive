@@ -347,7 +347,59 @@ Things this principle deliberately does *not* prescribe:
   databricks SSO), this is the same problem the web target hits.
   Probably needs a v2 pass with `flutter_appauth` or similar.
 
-## Non-goals
+## File-pairing convention
+
+Ledger uses oxy's basename-pairing convention for sidecar files, with
+the same caveat oxy applies: **the basename is a human-readable
+convention; `target:` is the authoritative pointer.** Example from oxy
+(`pokehouse-oxy/oxy/tests/restaurant_analyst.operations.test.yml`):
+
+```yaml
+name: "Restaurant operations"
+target: restaurant_analyst.agent.yml   # ← authoritative pointer
+```
+
+The filename `restaurant_analyst.operations.test.yml` shares its basename
+prefix with `restaurant_analyst.agent.yml`, but tools route via `target:`,
+not by filename inspection. Renaming a file doesn't break the link.
+
+Applied to ledger:
+
+```
+views/
+  strength.view.yml                              # semantic-layer parent
+  strength.input.yml                             # input overlay
+  strength.cut_deadlift_heavy.template.yml       # template
+  strength.cut_squat_heavy.template.yml
+  sauces.view.yml
+  sauces.input.yml
+  sauces.sriracha_aioli.template.yml
+```
+
+Each sidecar carries `target: <parent>.view.yml`:
+
+```yaml
+# strength.input.yml
+target: strength.view.yml
+date_field: date
+plannable: { log_field: start_time, log_format: time_string }
+dimensions: { ... }
+```
+
+```yaml
+# strength.cut_deadlift_heavy.template.yml
+target: strength.view.yml
+name: "Cut · Deadlift (heavy)"
+variables: [ ... ]
+entries: [ ... ]
+```
+
+The loader validates that `target:` resolves to a known `.view.yml` and
+that the basename pairing matches. If a template's `target:` doesn't
+match the view it's being loaded under (e.g. someone copied a file and
+forgot to update the field), parsing fails loud.
+
+
 
 - **Two-separate-repos.** We do not support `<customer>-oxy/` and
   `<customer>-ledger/` as separate sibling repos with cross-references.

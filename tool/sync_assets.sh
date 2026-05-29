@@ -17,27 +17,24 @@ CONFIG_SRC="${CONFIG_SRC:-$HOME/.config/ledger/config.yaml}"
 mkdir -p assets/schemas assets/templates assets/apps
 
 # Schemas: clear and recopy so deletions in the source propagate. Copies
-# paired .input.yml files alongside their .view.yml siblings.
-rm -f assets/schemas/*.view.yml assets/schemas/*.input.yml
-cp "$SCHEMAS_SRC"/*.view.yml assets/schemas/
-# .input.yml are optional — skip the copy if there aren't any.
+# all paired files (.view.yml, .input.yml, .template.yml) into one flat
+# assets/schemas/ dir — basename pairing keeps them associated.
+rm -f assets/schemas/*.yml
 shopt -s nullglob 2>/dev/null || true
-input_files=("$SCHEMAS_SRC"/*.input.yml)
-if [ ${#input_files[@]} -gt 0 ] && [ -e "${input_files[0]}" ]; then
-  cp "$SCHEMAS_SRC"/*.input.yml assets/schemas/
-fi
+for ext in view.yml input.yml template.yml; do
+  files=("$SCHEMAS_SRC"/*."$ext")
+  if [ ${#files[@]} -gt 0 ] && [ -e "${files[0]}" ]; then
+    cp "$SCHEMAS_SRC"/*."$ext" assets/schemas/ 2>/dev/null || true
+  fi
+done
 echo "synced $(ls assets/schemas/*.view.yml 2>/dev/null | wc -l | tr -d ' ') view(s)"\
-  " + $(ls assets/schemas/*.input.yml 2>/dev/null | wc -l | tr -d ' ') input overlay(s) from $SCHEMAS_SRC"
+  " + $(ls assets/schemas/*.input.yml 2>/dev/null | wc -l | tr -d ' ') input overlay(s)"\
+  " + $(ls assets/schemas/*.template.yml 2>/dev/null | wc -l | tr -d ' ') template(s) from $SCHEMAS_SRC"
 
-# Templates: mirror the templates/<view>/<name>.yml structure
+# Legacy templates/ dir is no longer used — clear any stale artifacts so
+# they don't leak into the bundle. Templates now live alongside views,
+# paired by basename: views/<view>.<name>.template.yml.
 rm -rf assets/templates
-mkdir -p assets/templates
-if [ -d "$TEMPLATES_SRC" ]; then
-  cp -R "$TEMPLATES_SRC"/. assets/templates/
-  echo "synced $(find assets/templates -name '*.yml' | wc -l | tr -d ' ') template(s) from $TEMPLATES_SRC"
-else
-  echo "no templates dir at $TEMPLATES_SRC (skipping)"
-fi
 
 # Apps: mirror apps/*.app.yml
 rm -rf assets/apps

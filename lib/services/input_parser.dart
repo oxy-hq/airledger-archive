@@ -54,12 +54,17 @@ InputOverlay parseInputOverlay(String yamlText) {
   if (node is! YamlMap) {
     throw const FormatException('Top-level YAML must be a map');
   }
-  final viewName = node['view'];
-  if (viewName is! String) {
+  // `target:` points at the paired .view.yml by full filename, mirroring
+  // oxy's .test.yml → target: <agent>.agent.yml convention. The view name
+  // is derived from the basename minus the .view.yml extension.
+  final target = node['target'];
+  if (target is! String || !target.endsWith('.view.yml')) {
     throw const FormatException(
-      'Missing required `view:` back-pointer in .input.yml',
+      'Missing or malformed `target:` field in .input.yml. '
+      'Expected: target: <view_name>.view.yml',
     );
   }
+  final viewName = target.substring(0, target.length - '.view.yml'.length);
   final dimensions = <String, DimensionOverlay>{};
   final dimsNode = node['dimensions'];
   if (dimsNode is YamlMap) {
