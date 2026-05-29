@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: airledger_test
+      POSTGRES_USER: airledger
+      POSTGRES_PASSWORD: airledgertest
+    ports:
+      - "${AIRLEDGER_PG_PORT:-15433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airledger"]
+      interval: 2s
+      timeout: 5s
+      retries: 10

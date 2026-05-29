@@ -25,6 +25,7 @@ dependencies:
   http: ^1.2.0
   package_info_plus: ^8.0.0
   lucide_icons_flutter: ^3.0.0
+  postgres: ^3.5.0
   airlayer:
     path: ../airlayer/sdk-dart
   fl_chart: ^0.69.0

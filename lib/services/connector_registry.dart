@@ -1,5 +1,6 @@
 import '../models/database_config.dart';
 import '../models/view_schema.dart';
+import 'postgres_connector.dart';
 import 'sheets_repository.dart';
 import 'warehouse_connector.dart';
 
@@ -20,6 +21,7 @@ class ConnectorRegistry {
         _fallback = fallback;
 
   /// Builds a registry by instantiating one connector per [DatabaseConfig].
+  /// Live network connections (Postgres / etc.) are opened during build.
   /// `bundledSheets` is wired in as both the `gsheets` entry (if no other
   /// sheets config exists) and the registry's general fallback.
   static Future<ConnectorRegistry> build({
@@ -28,10 +30,8 @@ class ConnectorRegistry {
   }) async {
     final byName = <String, WarehouseConnector>{};
     for (final cfg in configs) {
-      byName[cfg.name] = _instantiate(cfg, bundledSheets);
+      byName[cfg.name] = await _instantiate(cfg, bundledSheets);
     }
-    // Ensure a `gsheets`-named entry exists if bundled sheets is available
-    // and the user hasn't declared their own.
     if (bundledSheets != null && byName['gsheets'] == null) {
       byName['gsheets'] = bundledSheets;
     }
@@ -58,19 +58,22 @@ class ConnectorRegistry {
   /// `ensureTable` passes.
   Iterable<WarehouseConnector> get all => _byName.values;
 
-  static WarehouseConnector _instantiate(
+  static Future<WarehouseConnector> _instantiate(
     DatabaseConfig cfg,
     SheetsRepository? bundledSheets,
-  ) {
+  ) async {
     return switch (cfg) {
-      // Sheets gets the bundled connection — building a fresh one would
-      // require auth, which the bundled instance already holds.
-      SheetsConfig() => bundledSheets != null
-          ? bundledSheets
-          : UnimplementedConnector(cfg),
-      // Every other warehouse type parses cleanly but throws at use time.
-      // Concrete implementations land per phase (see
-      // docs/oxy-compatibility.md).
+      // Sheets uses the bundled connection — a fresh one would require auth,
+      // which the bundled instance already holds.
+      SheetsConfig() => bundledSheets ?? UnimplementedConnector(cfg),
+      // Postgres family (postgres / redshift / airhouse share the wire
+      // protocol). Redshift / Airhouse expose their PostgresConfig via
+      // their `.postgres` getters.
+      PostgresConfig() => await PostgresConnector.connect(cfg),
+      RedshiftConfig() => await PostgresConnector.connect(cfg.postgres),
+      AirhouseConfig() => await PostgresConnector.connect(cfg.postgres),
+      // Other warehouse types parse cleanly but throw at use time.
+      // See docs/oxy-compatibility.md for the implementation plan.
       _ => UnimplementedConnector(cfg),
     };
   }
