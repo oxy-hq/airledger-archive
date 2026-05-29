@@ -5,6 +5,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../models/view_schema.dart';
 import '../services/app_config.dart';
 import '../services/connector_registry.dart';
+import '../services/icon_resolver.dart';
 import '../services/schema_loader.dart';
 import '../services/settings_store.dart';
 import '../services/sheets_repository.dart';
@@ -133,6 +134,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
                   final view = data.views[i];
                   return ListTile(
+                    leading: IconResolver.resolve(
+                      view.icon,
+                      size: 22,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                     title: Text(view.name),
                     subtitle: view.description == null
                         ? null

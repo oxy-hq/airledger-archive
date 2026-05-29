@@ -27,6 +27,9 @@ class InputOverlay {
   final ListDisplay? listDisplay;
   final String? spreadsheetId;
 
+  /// Icon for the view — lucide name (e.g. `dumbbell`), emoji, or URL.
+  final String? icon;
+
   /// Per-dimension overlays, keyed by dimension name.
   final Map<String, DimensionOverlay> dimensions;
 
@@ -36,6 +39,7 @@ class InputOverlay {
     this.plannable,
     this.listDisplay,
     this.spreadsheetId,
+    this.icon,
     this.dimensions = const {},
   });
 }
@@ -93,6 +97,7 @@ InputOverlay parseInputOverlay(String yamlText) {
         ? null
         : _parseListDisplay(node['list_display'] as YamlMap),
     spreadsheetId: node['spreadsheet_id'] as String?,
+    icon: node['icon'] as String?,
     dimensions: dimensions,
   );
 }
@@ -254,5 +259,6 @@ ViewSchema applyInputOverlay(ViewSchema view, InputOverlay overlay) {
     measures: view.measures,
     listDisplay: overlay.listDisplay,
     plannable: overlay.plannable,
+    icon: overlay.icon,
   );
 }

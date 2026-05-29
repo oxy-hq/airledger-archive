@@ -40,6 +40,11 @@ class ViewSchema {
   final ListDisplay? listDisplay;
   final Plannable? plannable;
 
+  /// Icon shown on the HomeScreen view tile and in tile leadings.
+  /// Resolved via [IconResolver] — accepts lucide names (`dumbbell`),
+  /// emoji (`💪`), or URLs.
+  final String? icon;
+
   ViewSchema({
     required this.name,
     this.description,
@@ -52,6 +57,7 @@ class ViewSchema {
     required this.measures,
     this.listDisplay,
     this.plannable,
+    this.icon,
   });
 
   Dimension? dimensionByName(String name) =>
