@@ -1,0 +1,33 @@
+<svg width="2560" height="640" viewBox="0 0 2560 640" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    README banner — same proportions as airlayer's readme-banner.png
+    (2560x640). Light gray base with a subtle graph-paper grid;
+    mark + wordmark centered.
+  -->
+  <rect width="2560" height="640" fill="#F2F2F2"/>
+  <!-- grid lines: 1px lines every 32px -->
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#D8D8D8" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="2560" height="640" fill="url(#grid)"/>
+
+  <!--
+    Mark + wordmark, centered.
+    Combined target width ≈ 800; positioned so the visual center sits at
+    (1280, 320). Mark is 220x220 (left), wordmark "Airledger" follows.
+  -->
+  <g transform="translate(960, 220)">
+    <!-- mark — 220x220, scaled 76 → 220 = ×2.895 -->
+    <g transform="scale(2.895)">
+      <rect x="14" y="14" width="48" height="12" rx="6" fill="#0A0A0A"/>
+      <rect x="10" y="32" width="56" height="12" rx="6" fill="#0A0A0A"/>
+      <rect x="6"  y="50" width="64" height="12" rx="6" fill="#0A0A0A"/>
+    </g>
+    <text x="265" y="148"
+          font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+          font-size="132" font-weight="500" letter-spacing="-4"
+          fill="#0A0A0A">Airledger</text>
+  </g>
+</svg>

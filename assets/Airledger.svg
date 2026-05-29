@@ -1,0 +1,15 @@
+<svg width="330" height="76" viewBox="0 0 330 76" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Airledger wordmark — paired with airlayer's wordmark for visual family.
+    Mark (3 stacked pill rows) on the left, "Airledger" wordmark on right.
+    Wordmark uses live text so it picks up the Inter system fallback at
+    render time, matching the airlayer aesthetic.
+  -->
+  <rect x="14" y="14" width="48" height="12" rx="6" fill="black"/>
+  <rect x="10" y="32" width="56" height="12" rx="6" fill="black"/>
+  <rect x="6"  y="50" width="64" height="12" rx="6" fill="black"/>
+  <text x="97" y="52"
+        font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        font-size="46" font-weight="500" letter-spacing="-1.5"
+        fill="black">Airledger</text>
+</svg>

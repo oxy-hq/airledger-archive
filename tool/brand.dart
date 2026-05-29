@@ -172,26 +172,23 @@ void _writeStringsXml(Directory airledgerDir, String appName) {
   print('› Wrote res/values/strings.xml (app_name="$appName")');
 }
 
-/// Restore launcher icons to the tracked baseline. flutter_launcher_icons
-/// writes into FOUR places:
+/// Restore launcher icons to the tracked baseline (the Airledger default).
+///
+/// flutter_launcher_icons writes into FOUR places — every brand-build that
+/// supplies its own icon overwrites all four. To get a clean reset before
+/// the next build we `git checkout` all of them, returning to whatever
+/// the airledger-default icon committed at HEAD looks like:
 ///   - mipmap-{hdpi…xxxhdpi}/ic_launcher.png  (legacy launcher icon)
 ///   - mipmap-anydpi-v26/ic_launcher.xml      (adaptive icon definition)
 ///   - drawable-{hdpi…xxxhdpi}/ic_launcher_foreground.png  (adaptive fg)
 ///   - values/colors.xml                       (adaptive background color)
 ///
-/// All four must be undone for "no custom icon" to actually reset cleanly.
-/// The adaptive icon takes precedence on Android 8.0+, so leaving any of
-/// the adaptive files in place means the prior brand's foreground keeps
-/// showing. On Android 12+ the auto-derived splash screen reads the same
-/// adaptive icon, so the loading screen also stays stale.
-///
-/// Baseline checked into git is the Flutter-default state: legacy mipmaps
-/// only, no adaptive files. We `git checkout` the legacy mipmaps and
-/// `rm -f` the adaptive files. Subsequent flutter_launcher_icons runs
-/// recreate the adaptive files for branded builds; the next reset wipes
-/// them again.
+/// Unbranded builds (no `icon:` in ledger.yaml) skip the
+/// flutter_launcher_icons step and ship with the airledger default.
+/// Branded builds overwrite all four sets, then the next reset restores
+/// the airledger default again — so brands can't bleed into each other.
 Future<int> _resetLauncherIconsFromGit(Directory airledgerDir) async {
-  final r = await _run(
+  return _run(
     'git',
     [
       'checkout',
@@ -201,23 +198,16 @@ Future<int> _resetLauncherIconsFromGit(Directory airledgerDir) async {
       'android/app/src/main/res/mipmap-xhdpi',
       'android/app/src/main/res/mipmap-xxhdpi',
       'android/app/src/main/res/mipmap-xxxhdpi',
+      'android/app/src/main/res/mipmap-anydpi-v26',
+      'android/app/src/main/res/drawable-hdpi/ic_launcher_foreground.png',
+      'android/app/src/main/res/drawable-mdpi/ic_launcher_foreground.png',
+      'android/app/src/main/res/drawable-xhdpi/ic_launcher_foreground.png',
+      'android/app/src/main/res/drawable-xxhdpi/ic_launcher_foreground.png',
+      'android/app/src/main/res/drawable-xxxhdpi/ic_launcher_foreground.png',
+      'android/app/src/main/res/values/colors.xml',
     ],
     workingDir: airledgerDir.path,
   );
-  if (r != 0) return r;
-  for (final relPath in [
-    'android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml',
-    'android/app/src/main/res/drawable-hdpi/ic_launcher_foreground.png',
-    'android/app/src/main/res/drawable-mdpi/ic_launcher_foreground.png',
-    'android/app/src/main/res/drawable-xhdpi/ic_launcher_foreground.png',
-    'android/app/src/main/res/drawable-xxhdpi/ic_launcher_foreground.png',
-    'android/app/src/main/res/drawable-xxxhdpi/ic_launcher_foreground.png',
-    'android/app/src/main/res/values/colors.xml',
-  ]) {
-    final f = File(p.join(airledgerDir.path, relPath));
-    if (f.existsSync()) f.deleteSync();
-  }
-  return 0;
 }
 
 void _writeLauncherIconConfig(Directory airledgerDir, String iconPath) {

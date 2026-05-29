@@ -1,0 +1,13 @@
+<svg width="76" height="76" viewBox="0 0 76 76" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Airledger mark — three stacked horizontal rows.
+    Paired with airlayer's three-diamond stack: same chunky stacked
+    aesthetic, but the shapes read as ledger entries / log rows rather
+    than abstract data layers. Each rectangle is a pill (full corner
+    radius) with the bottom bar widest (slight perspective-stack feel,
+    mirroring airlayer's bottom-heaviest layer).
+  -->
+  <rect x="14" y="14" width="48" height="12" rx="6" fill="black"/>
+  <rect x="10" y="32" width="56" height="12" rx="6" fill="black"/>
+  <rect x="6"  y="50" width="64" height="12" rx="6" fill="black"/>
+</svg>
