@@ -58,8 +58,15 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final view in views) {
       await registry.forView(view).ensureTable(view);
     }
-    final llm = LlmClient(assetConfig.models);
-    final llmCache = LlmResponseCache();
+    // disable_post_log in config.yml gates every piece of the LLM plumbing.
+    // When set, we hand TimelineScreen `null` llm/cache so the post-log hook
+    // is a no-op even for views that declare one — useful for builds (Poke
+    // House) where we don't want any LLM behavior at all.
+    final llm = assetConfig.disablePostLog
+        ? null
+        : LlmClient(assetConfig.models);
+    final llmCache =
+        assetConfig.disablePostLog ? null : LlmResponseCache();
     return _Bootstrap(
       views: views,
       repository: repo,
@@ -169,8 +176,8 @@ class _Bootstrap {
   final List<ViewSchema> views;
   final SheetsRepository repository;
   final ConnectorRegistry registry;
-  final LlmClient llm;
-  final LlmResponseCache llmCache;
+  final LlmClient? llm;
+  final LlmResponseCache? llmCache;
 
   /// OS-level app label (from strings.xml, which brand.dart writes per
   /// `app_name:` in the schemas repo's `ledger.yaml`).

@@ -49,14 +49,20 @@ class LlmClient {
       }),
     );
     if (resp.statusCode != 200) {
-      throw StateError(
-        'OpenAI call failed (${resp.statusCode}): ${resp.body}',
+      throw LlmCallException(
+        vendor: 'OpenAI',
+        status: resp.statusCode,
+        body: resp.body,
       );
     }
     final body = jsonDecode(resp.body) as Map<String, dynamic>;
     final choices = body['choices'] as List?;
     if (choices == null || choices.isEmpty) {
-      throw StateError('OpenAI returned no choices: ${resp.body}');
+      throw LlmCallException(
+        vendor: 'OpenAI',
+        status: 200,
+        body: 'no choices in response',
+      );
     }
     final msg = (choices.first as Map)['message'] as Map?;
     return (msg?['content'] as String?)?.trim() ?? '';
@@ -80,16 +86,57 @@ class LlmClient {
       }),
     );
     if (resp.statusCode != 200) {
-      throw StateError(
-        'Anthropic call failed (${resp.statusCode}): ${resp.body}',
+      throw LlmCallException(
+        vendor: 'Anthropic',
+        status: resp.statusCode,
+        body: resp.body,
       );
     }
     final body = jsonDecode(resp.body) as Map<String, dynamic>;
     final content = body['content'] as List?;
     if (content == null || content.isEmpty) {
-      throw StateError('Anthropic returned no content: ${resp.body}');
+      throw LlmCallException(
+        vendor: 'Anthropic',
+        status: 200,
+        body: 'no content in response',
+      );
     }
     final first = content.first as Map;
     return (first['text'] as String?)?.trim() ?? '';
   }
+}
+
+/// Thrown when a vendor call fails. Stringifies into a tile-friendly,
+/// single-line summary (the response body is truncated) so the post-log
+/// hook's `cache.putError` displays something useful inline instead of an
+/// uninformative "Bad state".
+class LlmCallException implements Exception {
+  final String vendor;
+  final int status;
+  final String body;
+
+  LlmCallException({
+    required this.vendor,
+    required this.status,
+    required this.body,
+  });
+
+  /// Pulls a short human-readable error out of the body if it's JSON in the
+  /// shape `{"error": {"message": "..."}}` (both OpenAI + Anthropic use
+  /// that). Falls back to the raw body, truncated.
+  String get shortBody {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map) {
+        final err = decoded['error'];
+        if (err is Map && err['message'] is String) return err['message'];
+        if (err is String) return err;
+      }
+    } catch (_) {}
+    final s = body.replaceAll('\n', ' ').trim();
+    return s.length > 200 ? '${s.substring(0, 200)}…' : s;
+  }
+
+  @override
+  String toString() => '$vendor $status: $shortBody';
 }

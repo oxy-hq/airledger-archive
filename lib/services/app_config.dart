@@ -10,7 +10,18 @@ class AppConfig {
   final String spreadsheetId;
   final List<ModelConfig> models;
 
-  AppConfig({required this.spreadsheetId, required this.models});
+  /// Top-level kill-switch for post-log LLM hooks. When true, the timeline
+  /// skips the post-log hook even if a view has one defined and a model is
+  /// configured. Set via `disable_post_log: true` in the repo `config.yml`.
+  /// Useful for builds (e.g. Poke House) that want every other piece of
+  /// the LLM plumbing inert.
+  final bool disablePostLog;
+
+  AppConfig({
+    required this.spreadsheetId,
+    required this.models,
+    this.disablePostLog = false,
+  });
 
   static Future<AppConfig> load() async {
     final raw = await rootBundle.loadString('assets/config.yaml');
@@ -34,7 +45,11 @@ class AppConfig {
         models.add(ModelConfig.fromYaml(_yamlMapToJson(entry)));
       }
     }
-    return AppConfig(spreadsheetId: spreadsheetId, models: models);
+    return AppConfig(
+      spreadsheetId: spreadsheetId,
+      models: models,
+      disablePostLog: (node['disable_post_log'] as bool?) ?? false,
+    );
   }
 }
 
