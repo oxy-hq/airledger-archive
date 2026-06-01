@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:googleapis/sheets/v4.dart' as sheets;
 import 'package:googleapis_auth/auth_io.dart';
+import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
 import '../models/database_config.dart';
@@ -47,10 +51,14 @@ class SheetsRepository implements WarehouseConnector {
     final credentials = ServiceAccountCredentials.fromJson(
       serviceAccountKeyJson,
     );
-    final client = await clientViaServiceAccount(
+    final authed = await clientViaServiceAccount(
       credentials,
       [sheets.SheetsApi.spreadsheetsScope],
     );
+    // Wrap the auth client so every Sheets call survives transient cold-
+    // start network errors ("software caused connection abort", DNS not
+    // ready, TLS handshake races) without surfacing them to the user.
+    final client = _RetryingClient(authed);
     final api = sheets.SheetsApi(client);
     return SheetsRepository._(
       config ?? SheetsConfig(name: 'gsheets', spreadsheetId: defaultSpreadsheetId),
@@ -407,5 +415,72 @@ class SheetsRepository implements WarehouseConnector {
       record[dim.name] = CellCodec.decode(dim.type, raw);
     }
     return record;
+  }
+}
+
+/// Wraps an http.Client and retries transient send-level failures with
+/// exponential backoff. Targets cold-start network races (DNS not ready,
+/// TLS handshake aborts) that present as SocketException / HandshakeException
+/// / "Connection abort" — the Sheets API itself returns 5xx for its own
+/// transient issues and Google's SDK already handles those; we only need to
+/// cover the case where the request never reached the wire.
+///
+/// HTTP responses (any status code) are passed through unchanged — we do
+/// NOT retry 4xx/5xx, only thrown exceptions. Non-idempotent writes are
+/// therefore safe: a retry only fires when we know the previous attempt
+/// didn't get a response from the server.
+class _RetryingClient extends http.BaseClient {
+  final http.Client _inner;
+  static const _maxAttempts = 4;
+  static const _baseDelay = Duration(milliseconds: 300);
+
+  _RetryingClient(this._inner);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    var attempt = 0;
+    while (true) {
+      attempt++;
+      try {
+        return await _inner.send(_clone(request));
+      } catch (e) {
+        if (attempt >= _maxAttempts || !_isTransient(e)) rethrow;
+        await Future<void>.delayed(_baseDelay * (1 << (attempt - 1)));
+      }
+    }
+  }
+
+  @override
+  void close() => _inner.close();
+
+  /// Recreates the request so a retried send isn't reusing a consumed body.
+  http.BaseRequest _clone(http.BaseRequest src) {
+    if (src is http.Request) {
+      return http.Request(src.method, src.url)
+        ..headers.addAll(src.headers)
+        ..bodyBytes = src.bodyBytes
+        ..followRedirects = src.followRedirects
+        ..maxRedirects = src.maxRedirects
+        ..persistentConnection = src.persistentConnection;
+    }
+    // Streamed/multipart requests aren't safely re-sendable (their bodies
+    // are consumed on first attempt). Pass through as-is — first try only.
+    return src;
+  }
+
+  bool _isTransient(Object e) {
+    if (e is SocketException) return true;
+    if (e is HandshakeException) return true;
+    if (e is TimeoutException) return true;
+    if (e is http.ClientException) {
+      final m = e.message.toLowerCase();
+      return m.contains('connection abort') ||
+          m.contains('connection closed') ||
+          m.contains('connection reset') ||
+          m.contains('connection refused') ||
+          m.contains('connection terminated') ||
+          m.contains('handshake');
+    }
+    return false;
   }
 }
