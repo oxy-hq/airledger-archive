@@ -881,6 +881,11 @@ class _RecordTile extends StatelessWidget {
       minVerticalPadding: 10,
       selected: selected,
       selectedTileColor: scheme.primaryContainer.withValues(alpha: 0.4),
+      // The leading slot doubles as the log-button when the row is planned:
+      // the empty orange circle is tappable (with a Material ripple to
+      // signal "this is a button") and tap = log. Replaces the separate
+      // trailing play button — same affordance the user's intuition was
+      // already reaching for.
       leading: selectionMode
           ? Icon(
               selected
@@ -890,10 +895,12 @@ class _RecordTile extends StatelessWidget {
               color: selected ? scheme.secondary : scheme.outlineVariant,
             )
           : (item.isPlanned
-              ? const Icon(Icons.radio_button_unchecked,
-                  size: 22, color: Colors.orange)
-              : const Icon(Icons.check_circle,
-                  size: 22, color: Colors.green)),
+              ? _LogCircle(onTap: onLogNow)
+              : const Padding(
+                  padding: EdgeInsets.all(11),
+                  child: Icon(Icons.check_circle,
+                      size: 22, color: Colors.green),
+                )),
       title: Text(_titleFor(view, item.values)),
       subtitle: (subtitle == null && llmResponse == null && !llmPending)
           ? null
@@ -926,20 +933,8 @@ class _RecordTile extends StatelessWidget {
                   ),
               ],
             ),
-      trailing: !selectionMode && item.isPlanned
-          ? IconButton(
-              icon: const Icon(
-                Icons.play_circle_fill,
-                size: 28,
-                color: Colors.orange,
-              ),
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(),
-              tooltip: 'Log now',
-              onPressed: onLogNow,
-            )
-          : null,
+      // No trailing action — the leading circle is now the log button.
+      trailing: null,
       onTap: onTap,
       onLongPress: onLongPress,
     );
@@ -974,6 +969,38 @@ class _ErrorView extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       child: Center(
         child: Text('Error: $error', textAlign: TextAlign.center),
+      ),
+    );
+  }
+}
+
+/// Tappable empty-circle that fills the row's leading slot for planned
+/// items. Tap = promote-to-logged (calls onLogNow). The Material ink
+/// ripple is what makes the affordance read "this is a button" instead
+/// of "this is a status icon" — the visual is otherwise identical to
+/// the static green check the row flips to once logged.
+class _LogCircle extends StatelessWidget {
+  final VoidCallback onTap;
+  const _LogCircle({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        // 44x44 hit target — Material accessibility minimum — even though
+        // the visual circle is only 22px. The extra padding is invisible
+        // but catches near-misses comfortably.
+        customBorder: const CircleBorder(),
+        child: const Padding(
+          padding: EdgeInsets.all(11),
+          child: Icon(
+            Icons.radio_button_unchecked,
+            size: 22,
+            color: Colors.orange,
+          ),
+        ),
       ),
     );
   }
