@@ -138,6 +138,25 @@ Future<int> main(List<String> argv) async {
   ]);
   if (r3 != 0) return r3;
 
+  // Restore tracked launcher icons + strings.xml + build.gradle.kts back to
+  // the airledger baseline. The APK we just installed has the brand-specific
+  // versions baked in; the working tree no longer needs them. Leaving these
+  // dirty between builds risks a future `git add -A` sweeping the previous
+  // build's branding into the airledger repo's tracked baseline — which has
+  // happened (twice) and caused the next brand's build to ship the previous
+  // brand's launcher icon.
+  await _resetLauncherIconsFromGit(airledgerDir);
+  await _run(
+    'git',
+    [
+      'checkout',
+      '--',
+      'android/app/build.gradle.kts',
+      'android/app/src/main/res/values/strings.xml',
+    ],
+    workingDir: airledgerDir.path,
+  );
+
   print('\n✓ Installed and launched ${config.appName} '
       '(${config.packageId})');
   return 0;
