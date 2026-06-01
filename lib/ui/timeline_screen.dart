@@ -340,7 +340,9 @@ class _TimelineScreenState extends State<TimelineScreen> {
 
   Future<void> _edit(_Item item) async {
     if (item.isPlanned) {
-      // Edit the planned values in-place — never touches the sheet.
+      // Save on a planned entry = log. Form is pre-filled with the planned
+      // values; the user tweaks them and tapping save commits to the sheet
+      // and removes the planned row (same path as the Play button).
       final result = await Navigator.of(context).push<Map<String, Object?>>(
         MaterialPageRoute(
           builder: (_) => FormScreen(
@@ -352,11 +354,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
         ),
       );
       if (result == null) return;
-      await PlanStore.update(
-        widget.view,
-        item.planned!.copyWith(values: result),
-      );
-      _reload();
+      await _logNow(item, overrideValues: result);
     } else {
       final saved = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
@@ -465,10 +463,14 @@ class _TimelineScreenState extends State<TimelineScreen> {
   /// template header) and just visually flips to "done". The Sheets `create`
   /// happens in the background; on failure we surface a snackbar and
   /// re-sync from the source of truth.
-  Future<void> _logNow(_Item item) async {
+  Future<void> _logNow(_Item item, {Map<String, Object?>? overrideValues}) async {
     if (!item.isPlanned) return;
     final planned = item.planned!;
-    final values = Map<String, Object?>.from(planned.values);
+    // `overrideValues` is the post-edit values map (from the Save-on-planned
+    // path). When present, it takes precedence over `planned.values` so any
+    // tweaks the user made in the form survive into the logged row.
+    final values =
+        Map<String, Object?>.from(overrideValues ?? planned.values);
     final plannable = widget.view.plannable;
     if (plannable != null) {
       final existing = values[plannable.logField];
@@ -477,7 +479,12 @@ class _TimelineScreenState extends State<TimelineScreen> {
       }
     }
     final dateDim = widget.view.dateField;
-    if (dateDim != null) values[dateDim] = planned.date;
+    // Only backfill from the planning date if the user didn't set their own
+    // date in the edit form. Honoring a user-entered date matters for the
+    // "logging yesterday's set today" case.
+    if (dateDim != null && values[dateDim] == null) {
+      values[dateDim] = planned.date;
+    }
     applyDerives(widget.view, values);
     // Pre-assign id so we can resolve the row for future edits/deletes without
     // re-fetching from Sheets (the create call doesn't return the row index).

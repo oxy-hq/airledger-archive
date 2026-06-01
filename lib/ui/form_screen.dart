@@ -45,18 +45,25 @@ class _FormScreenState extends State<FormScreen> {
     _record = <String, Object?>{};
     if (widget.isEdit) {
       _record.addAll(widget.existing!);
-    } else {
-      for (final dim in widget.view.editableDimensions) {
-        final d = resolveDefault(dim);
-        if (d != null) _record[dim.name] = d;
-      }
+    }
+    // Apply defaults to any field not already populated. Matters not just
+    // for fresh entries but also for editing planned (template-derived)
+    // rows — the template may have left date/time/etc. blank and we still
+    // want the form to land with sensible values rather than '—'.
+    for (final dim in widget.view.editableDimensions) {
+      if (_record[dim.name] != null) continue;
+      final d = resolveDefault(dim);
+      if (d != null) _record[dim.name] = d;
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Save on a planned entry promotes it to a logged row (no separate "Log
+    // now" step). The title reflects that — "Log" rather than "Edit planned"
+    // — so the user knows tapping save commits, not just stashes.
     final titlePrefix = widget.planMode
-        ? 'Edit planned'
+        ? 'Log'
         : (widget.isEdit ? 'Edit' : 'New');
     return Scaffold(
       appBar: AppBar(
