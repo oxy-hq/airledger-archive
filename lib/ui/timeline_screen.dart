@@ -4,15 +4,18 @@ import 'package:uuid/uuid.dart';
 
 import 'package:jinja/jinja.dart' hide Template;
 
+import '../models/model_config.dart';
 import '../models/planned_entry.dart';
 import '../models/view_schema.dart';
 import '../services/derive.dart';
+import '../services/github_client.dart';
 import '../services/list_display_render.dart';
 import '../services/llm_client.dart';
 import '../services/llm_response_cache.dart';
 import '../services/log_now.dart';
 import '../services/plan_store.dart';
 import '../services/sheets_repository.dart';
+import 'chat_screen.dart';
 import 'form_screen.dart';
 import 'templates_screen.dart';
 
@@ -63,12 +66,21 @@ class TimelineScreen extends StatefulWidget {
   final LlmClient? llm;
   final LlmResponseCache? llmCache;
 
+  /// Anthropic model + GitHub client passed through so the chat icon in
+  /// the app bar can launch ChatScreen with this view auto-attached as
+  /// screen context. Both optional — the icon hides if no chat model is
+  /// configured.
+  final ModelConfig? chatModel;
+  final GithubClient? github;
+
   const TimelineScreen({
     super.key,
     required this.view,
     required this.repository,
     this.llm,
     this.llmCache,
+    this.chatModel,
+    this.github,
   });
 
   @override
@@ -219,6 +231,21 @@ class _TimelineScreenState extends State<TimelineScreen> {
     return AppBar(
       title: Text(widget.view.name),
       actions: [
+        if (widget.chatModel != null)
+          IconButton(
+            icon: const Icon(Icons.smart_toy_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => ChatScreen(
+                  model: widget.chatModel!,
+                  github: widget.github,
+                  view: widget.view,
+                  repository: widget.repository,
+                ),
+              ),
+            ),
+            tooltip: 'Chat about this view',
+          ),
         IconButton(
           icon: const Icon(Icons.list_alt),
           onPressed: _openTemplates,

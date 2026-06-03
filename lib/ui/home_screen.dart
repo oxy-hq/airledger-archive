@@ -2,15 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:package_info_plus/package_info_plus.dart';
 
+import '../models/github_config.dart';
+import '../models/model_config.dart';
 import '../models/view_schema.dart';
 import '../services/app_config.dart';
 import '../services/connector_registry.dart';
+import '../services/github_client.dart';
 import '../services/icon_resolver.dart';
 import '../services/llm_client.dart';
 import '../services/llm_response_cache.dart';
 import '../services/schema_loader.dart';
+import '../services/schema_sync.dart';
 import '../services/sheets_repository.dart';
 import 'apps_screen.dart';
+import 'chat_screen.dart';
 import 'timeline_screen.dart';
 import 'today_dashboard.dart';
 
@@ -74,7 +79,54 @@ class _HomeScreenState extends State<HomeScreen> {
       appName: packageInfo.appName,
       llm: llm,
       llmCache: llmCache,
+      models: assetConfig.models,
+      github: assetConfig.github,
     );
+  }
+
+  /// Pulls schemas/templates from GitHub, then rebuilds the view list
+  /// from the refreshed cache. Surfaces success/error via a snackbar.
+  Future<void> _syncFromGithub(GithubConfig cfg) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Syncing schemas from GitHub…'),
+        duration: Duration(seconds: 30),
+      ),
+    );
+    try {
+      final result = await SchemaSync(GithubClient(cfg)).refresh();
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      if (!result.ok) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('Sync failed: ${result.error}')),
+        );
+        return;
+      }
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Synced ${result.fetched} file(s) from '
+            '${cfg.repoFullName}@${cfg.defaultBranch}',
+          ),
+        ),
+      );
+      setState(() => _bootstrap = _initialize());
+    } catch (e) {
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text('Sync failed: $e')));
+    }
+  }
+
+  /// Picks the first Anthropic model from config — chat only supports
+  /// Anthropic right now (the tool-use loop is Anthropic-shaped).
+  ModelConfig? _chatModel(List<ModelConfig> models) {
+    for (final m in models) {
+      if (m.vendor == ModelVendor.anthropic) return m;
+    }
+    return null;
   }
 
   @override
@@ -83,10 +135,34 @@ class _HomeScreenState extends State<HomeScreen> {
       future: _bootstrap,
       builder: (context, snap) {
         final appName = snap.data?.appName ?? 'Airledger';
+        final boot = snap.data;
+        final github = boot?.github;
+        final chatModel =
+            boot == null ? null : _chatModel(boot.models);
         return Scaffold(
           appBar: AppBar(
             title: Text(appName),
             actions: [
+              if (chatModel != null)
+                IconButton(
+                  icon: const Icon(Icons.smart_toy_outlined),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => ChatScreen(
+                        model: chatModel,
+                        github:
+                            github == null ? null : GithubClient(github),
+                      ),
+                    ),
+                  ),
+                  tooltip: 'Chat',
+                ),
+              if (github != null)
+                IconButton(
+                  icon: const Icon(Icons.cloud_download_outlined),
+                  onPressed: () => _syncFromGithub(github),
+                  tooltip: 'Sync schemas from GitHub',
+                ),
               IconButton(
                 icon: const Icon(Icons.refresh),
                 onPressed: () => setState(() => _bootstrap = _initialize()),
@@ -155,6 +231,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                 repository: data.repository,
                                 llm: data.llm,
                                 llmCache: data.llmCache,
+                                chatModel: chatModel,
+                                github: github == null
+                                    ? null
+                                    : GithubClient(github),
                               ),
                             ),
                           ),
@@ -183,6 +263,15 @@ class _Bootstrap {
   /// `app_name:` in the schemas repo's `ledger.yaml`).
   final String appName;
 
+  /// Full models list — chat picks an Anthropic entry; post-log hook
+  /// uses by-name lookup. Both share the same models: block in config.yml.
+  final List<ModelConfig> models;
+
+  /// GitHub config — drives schema sync + chat's repo tools. Null when
+  /// the build has no github: in config.yml; UI hides the relevant
+  /// buttons.
+  final GithubConfig? github;
+
   _Bootstrap({
     required this.views,
     required this.repository,
@@ -190,6 +279,8 @@ class _Bootstrap {
     required this.appName,
     required this.llm,
     required this.llmCache,
+    required this.models,
+    required this.github,
   });
 }
 

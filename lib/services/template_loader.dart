@@ -1,39 +1,36 @@
-import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 import 'package:yaml/yaml.dart';
 
 import '../models/template.dart';
+import 'schema_files.dart';
 
-/// Loads template YAML files from bundled assets. Templates live next to
-/// their paired `.view.yml` using oxy-style basename pairing (mirrors
-/// the agent + `.test.yml` precedent in oxy-internal):
+/// Loads template YAML files. Templates live next to their paired
+/// `.view.yml` using oxy-style basename pairing (mirrors the agent +
+/// `.test.yml` precedent in oxy-internal):
 ///
 ///   views/strength.view.yml                  ← parent (semantic)
 ///   views/strength.input.yml                 ← paired input overlay
 ///   views/strength.cut_deadlift_heavy.template.yml   ← paired template
 ///   views/strength.cut_squat_heavy.template.yml
 ///
-/// All synced into assets/schemas/ at build time by sync_assets.sh.
+/// Source: bundled assets initially, SchemaSync cache after a refresh.
+/// See [listAllSchemaFiles].
 class TemplateLoader {
-  static const _prefix = 'assets/schemas/';
-
   /// Returns all templates for [viewName], sorted by name.
   static Future<List<Template>> loadForView(String viewName) async {
-    final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-    final paths = manifest
-        .listAssets()
-        .where((k) => k.startsWith(_prefix) && _isTemplateFor(k, viewName))
+    final files = await listAllSchemaFiles();
+    final matching = files
+        .where((f) => _isTemplateFor(f.basename, viewName))
         .toList();
     final templates = <Template>[];
-    for (final path in paths) {
-      final raw = await rootBundle.loadString(path);
-      templates.add(_parse(raw, path, viewName));
+    for (final f in matching) {
+      final raw = await f.read();
+      templates.add(_parse(raw, f.basename, viewName));
     }
     templates.sort((a, b) => a.name.compareTo(b.name));
     return templates;
   }
 
-  static bool _isTemplateFor(String path, String viewName) {
-    final basename = path.split('/').last;
+  static bool _isTemplateFor(String basename, String viewName) {
     if (!basename.endsWith('.template.yml')) return false;
     if (!basename.startsWith('$viewName.')) return false;
     final middle = basename.substring(
@@ -41,7 +38,7 @@ class TemplateLoader {
     return middle.isNotEmpty;
   }
 
-  static Template _parse(String yamlText, String path, String expectedView) {
+  static Template _parse(String yamlText, String basename, String expectedView) {
     final node = loadYaml(yamlText);
     if (node is! YamlMap) {
       throw const FormatException('Template YAML must be a map');
@@ -49,7 +46,7 @@ class TemplateLoader {
     final target = node['target'];
     if (target is! String || !target.endsWith('.view.yml')) {
       throw FormatException(
-        'Template $path: missing or malformed `target:`. '
+        'Template $basename: missing or malformed `target:`. '
         'Expected: target: <view_name>.view.yml',
       );
     }
@@ -57,7 +54,7 @@ class TemplateLoader {
         target.substring(0, target.length - '.view.yml'.length);
     if (declaredView != expectedView) {
       throw FormatException(
-        'Template $path: target ($declaredView) does not match '
+        'Template $basename: target ($declaredView) does not match '
         'expected view ($expectedView)',
       );
     }
@@ -85,7 +82,6 @@ class TemplateLoader {
       }
     }
 
-    final basename = path.split('/').last;
     final middle = basename.substring(
       expectedView.length + 1,
       basename.length - '.template.yml'.length,

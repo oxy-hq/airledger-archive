@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:yaml/yaml.dart';
 
+import '../models/github_config.dart';
 import '../models/model_config.dart';
 
 /// Runtime config bundled in the APK at `assets/config.yaml`.
@@ -17,10 +18,16 @@ class AppConfig {
   /// the LLM plumbing inert.
   final bool disablePostLog;
 
+  /// Optional GitHub config — drives the schema hot-reload + chat assistant.
+  /// Null when the build has no `github:` block; the relevant features
+  /// stay inert.
+  final GithubConfig? github;
+
   AppConfig({
     required this.spreadsheetId,
     required this.models,
     this.disablePostLog = false,
+    this.github,
   });
 
   static Future<AppConfig> load() async {
@@ -49,6 +56,9 @@ class AppConfig {
       spreadsheetId: spreadsheetId,
       models: models,
       disablePostLog: (node['disable_post_log'] as bool?) ?? false,
+      github: node['github'] is YamlMap
+          ? GithubConfig.fromYaml(_yamlMapToJson(node['github'] as YamlMap))
+          : null,
     );
   }
 }
