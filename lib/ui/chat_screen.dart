@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../models/model_config.dart';
 import '../models/view_schema.dart';
@@ -22,12 +23,19 @@ class ChatScreen extends StatefulWidget {
   final ViewSchema? view;
   final SheetsRepository? repository;
 
+  /// The date the user has selected on the timeline. apply_template
+  /// defaults its target date to this when the user doesn't specify
+  /// otherwise (so "apply cut_squat_heavy" plans for the day they're
+  /// looking at). Null when chat is opened from a non-date context.
+  final DateTime? selectedDate;
+
   const ChatScreen({
     super.key,
     required this.model,
     this.github,
     this.view,
     this.repository,
+    this.selectedDate,
   });
 
   @override
@@ -46,6 +54,7 @@ class _ChatScreenState extends State<ChatScreen> {
     github: widget.github,
     view: widget.view,
     repository: widget.repository,
+    selectedDate: widget.selectedDate,
   );
 
   late final ChatRunner _runner = ChatRunner(widget.model);
@@ -56,10 +65,22 @@ class _ChatScreenState extends State<ChatScreen> {
           "no preamble.",
       "",
       "Capabilities you have via tools:",
-      if (widget.view != null)
+      if (widget.view != null) ...[
         "- read_screen_context: dump the view the user is looking at + "
             "recent rows. Call this when they ask about 'this view' / "
             "'my data'.",
+        "- list_templates / read_template: discover what plans are "
+            "available for this view, with their variable specs.",
+        "- apply_template: create planned (not-yet-logged) entries on "
+            "a target date. Only call this AFTER the user agrees to a "
+            "specific template + variable values you've shown them.",
+        "- add_planned_entry: create a single planned row. Use for "
+            "ad-hoc additions outside a template. Same confirm rule "
+            "as apply_template.",
+        "- log_entry: write directly to the sheet, skipping the "
+            "planned step. ONLY when the user explicitly says 'log' "
+            "(vs. 'plan' / 'add').",
+      ],
       if (widget.github != null) ...[
         "- list_repo_dir / read_repo_file: browse the schemas repo.",
         "- propose_change: open a PR with a single-file update. Only call "
@@ -67,9 +88,14 @@ class _ChatScreenState extends State<ChatScreen> {
             "shown them. Never propose silently.",
       ],
       "",
-      "When proposing schema/template edits, fetch the current file first "
-          "(read_repo_file), show the diff in plain English, then "
-          "wait for the user to confirm before calling propose_change.",
+      "For 'what should I do today' style questions: call list_templates "
+          "to see what's available, read_screen_context to see what "
+          "they've done recently, then SUGGEST a template + reasoned "
+          "variable values. Wait for confirm before applying.",
+      "",
+      "For schema/template edits: fetch the current file first "
+          "(read_repo_file), show the diff in plain English, wait for "
+          "confirm before calling propose_change.",
     ];
     if (widget.view != null) {
       lines.addAll([
@@ -77,6 +103,12 @@ class _ChatScreenState extends State<ChatScreen> {
         "Currently open view: ${widget.view!.name}"
             "${widget.view!.description != null ? " (${widget.view!.description})" : ""}",
       ]);
+    }
+    if (widget.selectedDate != null) {
+      lines.add(
+        "Currently-viewed date: "
+        "${DateFormat('yyyy-MM-dd (EEEE)').format(widget.selectedDate!)}",
+      );
     }
     return lines.join('\n');
   }

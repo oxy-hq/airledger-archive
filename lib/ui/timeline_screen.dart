@@ -234,16 +234,23 @@ class _TimelineScreenState extends State<TimelineScreen> {
         if (widget.chatModel != null)
           IconButton(
             icon: const Icon(Icons.smart_toy_outlined),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => ChatScreen(
-                  model: widget.chatModel!,
-                  github: widget.github,
-                  view: widget.view,
-                  repository: widget.repository,
+            onPressed: () async {
+              await Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ChatScreen(
+                    model: widget.chatModel!,
+                    github: widget.github,
+                    view: widget.view,
+                    repository: widget.repository,
+                    selectedDate: _selectedDate,
+                  ),
                 ),
-              ),
-            ),
+              );
+              // The chat's apply_template / add_planned_entry tools
+              // mutate PlanStore; refresh the timeline on return so any
+              // new planned entries show up.
+              if (mounted) _reload();
+            },
             tooltip: 'Chat about this view',
           ),
         IconButton(
