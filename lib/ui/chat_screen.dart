@@ -2,13 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:intl/intl.dart';
 
+import '../models/chat_session.dart';
 import '../models/model_config.dart';
 import '../models/view_schema.dart';
 import '../services/analytics_engine.dart';
 import '../services/chat_runner.dart';
+import '../services/chat_store.dart';
 import '../services/chat_tools.dart';
 import '../services/github_client.dart';
+import '../services/llm_client.dart';
 import '../services/sheets_repository.dart';
+import 'chat_history_screen.dart';
 
 /// In-app AI assistant. Tool-using LLM that can read the current screen's
 /// view context, browse the schemas repo, and open PRs against it.
@@ -36,6 +40,11 @@ class ChatScreen extends StatefulWidget {
   /// looking at). Null when chat is opened from a non-date context.
   final DateTime? selectedDate;
 
+  /// Optional persisted session to restore. When set, the screen opens
+  /// with the full conversation visible and the LLM's prior context
+  /// intact; sending a new message picks up the conversation.
+  final ChatSession? resume;
+
   const ChatScreen({
     super.key,
     required this.model,
@@ -44,6 +53,7 @@ class ChatScreen extends StatefulWidget {
     this.repository,
     this.analytics,
     this.selectedDate,
+    this.resume,
   });
 
   @override
@@ -53,10 +63,20 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _controller = TextEditingController();
   final _scroll = ScrollController();
-  final List<_DisplayMsg> _displayed = [];
-  final List<ChatTurn> _history = [];
+  late final List<DisplayMessage> _displayed;
+  late final List<ChatTurn> _history;
+  late ChatSession _session;
   bool _sending = false;
+  bool _compacting = false;
   String? _error;
+
+  /// Compaction trigger: when the LLM conversation exceeds this many
+  /// turns (Anthropic content blocks count, including tool_result turns
+  /// the chat runner inserts), we summarize the older portion via a
+  /// non-tool LLM call. Keeps the tail intact so the model still has
+  /// recent precise context.
+  static const _compactTriggerTurns = 30;
+  static const _compactKeepRecent = 6;
 
   late final ChatToolset _toolset = ChatToolset(
     github: widget.github,
@@ -143,6 +163,27 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    final resume = widget.resume;
+    if (resume != null) {
+      _session = resume;
+      _displayed = List<DisplayMessage>.from(resume.displayed);
+      _history = [
+        for (final raw in resume.turns)
+          ChatTurn(
+            role: raw['role'] as String,
+            content: raw['content'],
+          ),
+      ];
+    } else {
+      _session = ChatSession.fresh(viewName: widget.view?.name);
+      _displayed = [];
+      _history = [];
+    }
+  }
+
+  @override
   void dispose() {
     _controller.dispose();
     _scroll.dispose();
@@ -152,8 +193,16 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send() async {
     final text = _controller.text.trim();
     if (text.isEmpty || _sending) return;
+
+    // Compact the conversation if it's grown past the trigger. The first
+    // user message of the session also becomes the title; do this before
+    // mutating state so the title sticks even if the LLM call fails.
+    if (_session.title == 'New chat') {
+      _session = _session.copyWith(title: _truncateTitle(text));
+    }
+
     setState(() {
-      _displayed.add(_DisplayMsg.user(text));
+      _displayed.add(DisplayMessage.user(text));
       _history.add(ChatTurn(role: 'user', content: text));
       _controller.clear();
       _sending = true;
@@ -162,6 +211,16 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
 
     try {
+      if (_history.length > _compactTriggerTurns) {
+        setState(() => _compacting = true);
+        final compacted = await _compactHistory(_history);
+        if (!mounted) return;
+        _history
+          ..clear()
+          ..addAll(compacted);
+        setState(() => _compacting = false);
+      }
+
       final result = await _runner.run(
         systemPrompt: _systemPrompt,
         conversation: _history,
@@ -172,7 +231,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _history
           ..clear()
           ..addAll(result.conversation);
-        _displayed.add(_DisplayMsg.assistant(
+        _displayed.add(DisplayMessage.assistant(
           result.text.isEmpty ? '(no response)' : result.text,
           toolCalls: result.toolCallCount,
           truncated: result.truncated,
@@ -180,13 +239,80 @@ class _ChatScreenState extends State<ChatScreen> {
         _sending = false;
       });
       _scrollToBottom();
+      await _persist();
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _error = e.toString();
         _sending = false;
+        _compacting = false;
       });
     }
+  }
+
+  /// Snapshot the current state into _session and save to disk. Best-
+  /// effort: a failure here doesn't block the chat.
+  Future<void> _persist() async {
+    _session = _session.copyWith(
+      updatedAt: DateTime.now(),
+      turns: [for (final t in _history) t.toJson()],
+      displayed: List<DisplayMessage>.from(_displayed),
+    );
+    try {
+      await ChatStore.save(_session);
+    } catch (_) {
+      // Persistence failure should not surface to the user — they can
+      // still chat; just won't see this session in history.
+    }
+  }
+
+  /// Ask a fresh LLM call (no tools) to summarize the older portion of
+  /// the conversation. Replaces those turns with one synthetic user
+  /// turn so the model retains the gist without paying for the full
+  /// token cost on every subsequent message.
+  Future<List<ChatTurn>> _compactHistory(List<ChatTurn> turns) async {
+    final tail = turns.sublist(turns.length - _compactKeepRecent);
+    final head = turns.sublist(0, turns.length - _compactKeepRecent);
+    final transcript = head
+        .map((t) {
+          if (t.content is String) return '${t.role}: ${t.content}';
+          // For content-block turns (tool_use / tool_result), just join
+          // any text blocks. Tool calls add noise but no info the
+          // summary needs to preserve verbatim.
+          if (t.content is List) {
+            final texts = (t.content as List)
+                .whereType<Map>()
+                .where((b) => b['type'] == 'text')
+                .map((b) => b['text'] as String)
+                .join(' ');
+            return '${t.role}: $texts';
+          }
+          return '';
+        })
+        .where((s) => s.trim().isNotEmpty)
+        .join('\n');
+    final prompt =
+        'Summarize this earlier portion of a conversation in 3-5 sentences. '
+        'Preserve concrete decisions, values, and facts that were discussed. '
+        'Do not editorialize.\n\n[CONVERSATION]\n$transcript';
+    final summary = await LlmClient([widget.model]).complete(
+      widget.model.name,
+      prompt,
+    );
+    return [
+      ChatTurn(
+        role: 'user',
+        content:
+            '(Earlier in this conversation, summarized:)\n${summary.trim()}',
+      ),
+      ...tail,
+    ];
+  }
+
+  String _truncateTitle(String s) {
+    final cleaned = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (cleaned.length <= 60) return cleaned;
+    return '${cleaned.substring(0, 57)}…';
   }
 
   void _scrollToBottom() {
@@ -207,7 +333,30 @@ class _ChatScreenState extends State<ChatScreen> {
         ? 'Chat'
         : 'Chat · ${widget.view!.name}';
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: AppBar(
+        title: Text(title),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: 'Chat history',
+            onPressed: () async {
+              // Save the current state first so it shows up in history.
+              if (_displayed.isNotEmpty) await _persist();
+              if (!mounted) return;
+              await Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ChatHistoryScreen(
+                    model: widget.model,
+                    github: widget.github?.config,
+                    repository: widget.repository,
+                    analytics: widget.analytics,
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
@@ -221,6 +370,20 @@ class _ChatScreenState extends State<ChatScreen> {
                     itemBuilder: (_, i) => _MsgBubble(msg: _displayed[i]),
                   ),
           ),
+          if (_compacting)
+            Container(
+              width: double.infinity,
+              color: Theme.of(context).colorScheme.secondaryContainer,
+              padding: const EdgeInsets.all(8),
+              child: Text(
+                'Compacting earlier conversation…',
+                style: TextStyle(
+                  color:
+                      Theme.of(context).colorScheme.onSecondaryContainer,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
           if (_error != null)
             Container(
               width: double.infinity,
@@ -284,34 +447,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-class _DisplayMsg {
-  final String role; // 'user' | 'assistant'
-  final String text;
-  final int toolCalls;
-  final bool truncated;
-  _DisplayMsg({
-    required this.role,
-    required this.text,
-    this.toolCalls = 0,
-    this.truncated = false,
-  });
-  factory _DisplayMsg.user(String text) =>
-      _DisplayMsg(role: 'user', text: text);
-  factory _DisplayMsg.assistant(
-    String text, {
-    int toolCalls = 0,
-    bool truncated = false,
-  }) =>
-      _DisplayMsg(
-        role: 'assistant',
-        text: text,
-        toolCalls: toolCalls,
-        truncated: truncated,
-      );
-}
-
 class _MsgBubble extends StatelessWidget {
-  final _DisplayMsg msg;
+  final DisplayMessage msg;
   const _MsgBubble({required this.msg});
 
   @override
@@ -356,6 +493,23 @@ class _MsgBubble extends StatelessWidget {
                       color: scheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(6),
                     ),
+                    // Blockquote — explicit colors instead of theme
+                    // defaults, which were picking up primaryContainer
+                    // (light blue) for both bg and text and rendering
+                    // unreadably on light themes.
+                    blockquote:
+                        Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: scheme.onSurface,
+                              fontStyle: FontStyle.italic,
+                            ),
+                    blockquoteDecoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border(
+                        left: BorderSide(color: scheme.primary, width: 3),
+                      ),
+                    ),
+                    blockquotePadding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
                   ),
                 ),
               if (msg.toolCalls > 0)

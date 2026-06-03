@@ -185,15 +185,25 @@ class ChatToolset {
       run: (input) async {
         final v = view!;
         await _ensureSynced(v);
-        // Build airlayer query. Filters are translated from the
-        // user-friendly {dim, op, value} shape advertised in the tool
-        // schema to airlayer's {member, operator, values} shape — same
-        // mapping app_runtime uses for .app.yml semantic queries.
+        // Airlayer wants member names view-prefixed (`strength.max_e1rm`),
+        // not bare. The LLM tool schema accepts bare names for ergonomics
+        // — we prefix here. Pre-prefixed names (containing `.`) pass
+        // through unchanged.
+        String prefix(String name) =>
+            name.contains('.') ? name : '${v.name}.$name';
+
         final query = <String, dynamic>{};
-        final measures = (input['measures'] as List?)?.cast<dynamic>();
-        if (measures != null) query['measures'] = measures;
-        final dims = (input['dimensions'] as List?)?.cast<dynamic>();
+        final measures = (input['measures'] as List?)
+            ?.map((e) => prefix(e.toString()))
+            .toList();
+        if (measures != null && measures.isNotEmpty) {
+          query['measures'] = measures;
+        }
+        final dims = (input['dimensions'] as List?)
+            ?.map((e) => prefix(e.toString()))
+            .toList();
         if (dims != null && dims.isNotEmpty) query['dimensions'] = dims;
+
         final rawFilters = (input['filters'] as List?)?.cast<dynamic>();
         if (rawFilters != null && rawFilters.isNotEmpty) {
           final translated = <Map<String, dynamic>>[];
@@ -204,15 +214,32 @@ class ChatToolset {
             final value = f['value'] ?? f['values'];
             if (dim == null || value == null) continue;
             translated.add({
-              'member': dim,
+              'member': prefix(dim),
               'operator': _airlayerOp(op),
               'values': value is List ? value : [value],
             });
           }
           if (translated.isNotEmpty) query['filters'] = translated;
         }
-        final order = (input['order'] as List?)?.cast<dynamic>();
-        if (order != null && order.isNotEmpty) query['order'] = order;
+
+        // Order: airlayer wants {id: <member>, desc: bool}. The LLM may
+        // send the more readable {by: <member>, dir: "asc"|"desc"} from
+        // the tool schema — translate both shapes.
+        final rawOrder = (input['order'] as List?)?.cast<dynamic>();
+        if (rawOrder != null && rawOrder.isNotEmpty) {
+          final translated = <Map<String, dynamic>>[];
+          for (final o in rawOrder) {
+            if (o is! Map) continue;
+            final by = (o['id'] ?? o['by'] ?? o['member'])?.toString();
+            if (by == null) continue;
+            final dir = (o['dir'] ?? o['direction'])?.toString().toLowerCase();
+            final desc = o['desc'] is bool
+                ? o['desc'] as bool
+                : (dir == 'desc' || dir == 'descending');
+            translated.add({'id': prefix(by), 'desc': desc});
+          }
+          if (translated.isNotEmpty) query['order'] = translated;
+        }
         if (input['limit'] != null) query['limit'] = input['limit'];
         final rows = await analytics!.run(v, query: query);
         return const JsonEncoder.withIndent('  ').convert({
