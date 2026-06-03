@@ -74,21 +74,26 @@ InputOverlay parseInputOverlay(String yamlText) {
   }
   final viewName = target.substring(0, target.length - '.view.yml'.length);
   final dimensions = <String, DimensionOverlay>{};
-  final dimsNode = node['dimensions'];
-  if (dimsNode is YamlMap) {
-    for (final entry in dimsNode.entries) {
+  // `fields:` is the preferred top-level key in .input.yml (it's a form
+  // spec, "fields" matches form vocabulary). `dimensions:` is accepted
+  // for backwards compatibility with the original schema that mirrored
+  // .view.yml's term — files written that way still parse.
+  final fieldsNode = node['fields'] ?? node['dimensions'];
+  if (fieldsNode is YamlMap) {
+    for (final entry in fieldsNode.entries) {
       final dimName = entry.key.toString();
       final v = entry.value;
       if (v is! YamlMap) {
         throw FormatException(
-          'Dimension overlay for "$dimName" must be a map',
+          'Field overlay for "$dimName" must be a map',
         );
       }
       dimensions[dimName] = _parseDimensionOverlay(v);
     }
-  } else if (dimsNode != null) {
+  } else if (fieldsNode != null) {
     throw const FormatException(
-      'dimensions: must be a map keyed by dimension name in .input.yml',
+      'fields: (or legacy dimensions:) must be a map keyed by field name '
+      'in .input.yml',
     );
   }
   return InputOverlay(
@@ -116,12 +121,65 @@ PostLogHook _parsePostLog(YamlMap node) {
   );
 }
 
+/// Parses a single field overlay. Accepts two layouts:
+///
+/// **New (preferred)** — flat. Form-spec keys live at the field's top level
+/// alongside derive/show_when. `options:` lists allowed/suggested values:
+/// ```yaml
+/// weight_lbs:
+///   widget: number
+///   required: true
+///   placeholder: "180.0"
+///   options: [a, b]
+///   derive: { from: ..., format: ... }
+///   show_when: { type: treadmill }
+/// ```
+///
+/// **Legacy** — form-spec keys nested under `input:`, autocomplete values
+/// under `samples:`:
+/// ```yaml
+/// weight_lbs:
+///   input:
+///     widget: number
+///     required: true
+///   samples: [a, b]
+///   derive: {...}
+/// ```
+///
+/// Detection: if an `input:` sub-map is present, treat as legacy. Otherwise
+/// flat. Both shapes produce the same DimensionOverlay.
 DimensionOverlay _parseDimensionOverlay(YamlMap node) {
+  final legacyInput = node['input'];
+  final isLegacy = legacyInput is YamlMap;
+  // Build the effective "form-spec source" map: in legacy it's the `input:`
+  // sub-map; in new flat layout it's the field node itself. _parseInput
+  // doesn't care which.
+  final formSource = isLegacy ? legacyInput : node;
+
+  // Decide whether to construct an InputSpec at all. In flat layout the
+  // field node and the form-spec source are the same map, so we have to
+  // distinguish "field has input config" from "field is derive-only" by
+  // checking for a form-spec marker (widget/required/default/etc.).
+  // derive-only fields (computed columns like day_of_week) skip the
+  // InputSpec entirely.
+  final hasInputConfig = isLegacy ||
+      _looksLikeFormSpec(formSource);
+
+  // Allowed/suggested values for the field, used by both autocomplete
+  // (suggestions) and dropdown (allowed list) widgets. Looked up in
+  // priority order:
+  //   1. `options:` at field level (preferred, new layout)
+  //   2. `samples:` at field level (legacy autocomplete location)
+  //   3. `input.options:` inside the legacy input: block (legacy dropdown)
+  final optionsNode = node['options'] ??
+      node['samples'] ??
+      (isLegacy ? (legacyInput as YamlMap)['options'] : null);
+
   return DimensionOverlay(
-    input: node['input'] == null ? null : _parseInput(node['input'] as YamlMap),
-    samples: node['samples'] == null
-        ? null
-        : (node['samples'] as YamlList).map((e) => e.toString()).toList(),
+    input: hasInputConfig ? _parseInput(formSource) : null,
+    samples: optionsNode is YamlList
+        ? optionsNode.map((e) => e.toString()).toList()
+        : null,
     showWhen: node['show_when'] == null
         ? null
         : <String, Object?>{
@@ -132,6 +190,23 @@ DimensionOverlay _parseDimensionOverlay(YamlMap node) {
         ? null
         : _parseDerive(node['derive'] as YamlMap),
   );
+}
+
+/// True if any of the form-spec keys are present — used by flat layout to
+/// tell "this field has form config" from "this field is derive-only".
+bool _looksLikeFormSpec(YamlMap node) {
+  const formKeys = {
+    'widget',
+    'required',
+    'default',
+    'min',
+    'max',
+    'options',
+    'placeholder',
+    'editable',
+    'now_button',
+  };
+  return formKeys.any(node.containsKey);
 }
 
 Plannable _parsePlannable(YamlMap node) {
