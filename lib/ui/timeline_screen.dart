@@ -492,9 +492,21 @@ class _TimelineScreenState extends State<TimelineScreen> {
       values['id'] = const Uuid().v4();
     }
 
-    // Optimistic in-place swap. Also bump every existing logged item's
-    // `__row` by +1 — the upcoming create() inserts at the top of the data
-    // section, shifting every existing row down by 1.
+    // Optimistic: remove the planned row from where it was and append the
+    // freshly-logged row at the END of the merged list (bottom of the
+    // logged section). Matches reload: list() sorts a date's logged rows
+    // ascending by the plannable log_field (start_time), so a row with
+    // start_time = now lands at the bottom of that day's logged rows.
+    //
+    // Drop the template association (use _Item.logged not
+    // loggedFromPlanned) so the just-logged row doesn't drag its template
+    // header into the logged section. The template's progress counter
+    // ("2 / 5 done") rebuilds from the remaining planned rows on the next
+    // _reload — same-session it temporarily under-counts, which is
+    // acceptable for an optimistic UI.
+    //
+    // The +1 row-index shift on existing logged rows mirrors the server-
+    // side insert at sheet row 2 that create() is about to do.
     values[rowIndexKey] = 0;
     final current = await _items;
     final idx = current.indexWhere((it) => it.keyString == planned.localId);
@@ -504,10 +516,8 @@ class _TimelineScreenState extends State<TimelineScreen> {
         by: 1,
       );
       final updated = List<_Item>.from(current);
-      updated[idx] = _Item.loggedFromPlanned(
-        planned: planned,
-        logged: values,
-      );
+      updated.removeAt(idx);
+      updated.add(_Item.logged(values));
       setState(() => _items = Future.value(updated));
     }
 

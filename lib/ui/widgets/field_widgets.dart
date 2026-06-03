@@ -19,11 +19,16 @@ Object? resolveDefault(Dimension dim) {
 }
 
 /// Dispatches to the correct field widget for [dim.input.widget].
+///
+/// [adHocSuggestions] are autocomplete values the user has previously
+/// entered that aren't in the schema's `samples` — only consumed by the
+/// autocomplete widget; ignored by everything else.
 Widget buildFieldWidget({
   Key? key,
   required Dimension dim,
   required Object? value,
   required ValueChanged<Object?> onChanged,
+  List<String>? adHocSuggestions,
 }) {
   final widget = dim.input?.widget ?? _widgetForType(dim.type);
   switch (widget) {
@@ -78,6 +83,7 @@ Widget buildFieldWidget({
         dim: dim,
         value: value,
         onChanged: onChanged,
+        adHocSuggestions: adHocSuggestions ?? const [],
       );
   }
 }
@@ -293,24 +299,51 @@ class _AutocompleteFieldWidget extends StatelessWidget {
   final Object? value;
   final ValueChanged<Object?> onChanged;
 
+  /// User-saved ad-hoc values from past sessions (loaded from
+  /// AutocompleteCache). Surfaced in the dropdown after the schema's
+  /// `samples` with a distinct visual marker — italic + a small "•"
+  /// prefix — so the user can tell their own additions from canonical
+  /// schema entries.
+  final List<String> adHocSuggestions;
+
   const _AutocompleteFieldWidget({
     super.key,
     required this.dim,
     required this.value,
     required this.onChanged,
+    required this.adHocSuggestions,
   });
+
+  /// Returns `(label, isAdHoc)` pairs for every suggestion. Samples first
+  /// (canonical), then ad-hoc (user's). De-duped case-insensitively
+  /// against samples — defensive even though AutocompleteCache.add does
+  /// this on the write side, in case the schema's samples gained an entry
+  /// after the user already cached the same string.
+  List<(String, bool)> _allOptions() {
+    final samples = dim.samples ?? const <String>[];
+    final sampleLower = samples.map((s) => s.toLowerCase()).toSet();
+    final adHoc = adHocSuggestions
+        .where((s) => !sampleLower.contains(s.toLowerCase()))
+        .toList();
+    return [
+      for (final s in samples) (s, false),
+      for (final s in adHoc) (s, true),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
-    final samples = dim.samples ?? const <String>[];
+    final allOptions = _allOptions();
     return Autocomplete<String>(
       initialValue: TextEditingValue(text: value?.toString() ?? ''),
       optionsBuilder: (input) {
         final q = input.text.trim().toLowerCase();
-        if (q.isEmpty) return samples.take(50);
-        return samples
-            .where((s) => s.toLowerCase().contains(q))
-            .take(50);
+        final filtered = q.isEmpty
+            ? allOptions
+            : allOptions
+                .where((o) => o.$1.toLowerCase().contains(q))
+                .toList();
+        return filtered.take(50).map((o) => o.$1);
       },
       onSelected: (s) => onChanged(s.isEmpty ? null : s),
       fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
@@ -328,6 +361,14 @@ class _AutocompleteFieldWidget extends StatelessWidget {
         );
       },
       optionsViewBuilder: (context, onSelected, options) {
+        // Walk the un-truncated options list in parallel so we can show
+        // the ad-hoc marker on user-added entries.
+        final shown = options.toList();
+        final adHocSet = <String>{
+          for (final (s, isAdHoc) in allOptions)
+            if (isAdHoc) s,
+        };
+        final scheme = Theme.of(context).colorScheme;
         return Align(
           alignment: Alignment.topLeft,
           child: Material(
@@ -337,9 +378,10 @@ class _AutocompleteFieldWidget extends StatelessWidget {
               child: ListView.builder(
                 padding: EdgeInsets.zero,
                 shrinkWrap: true,
-                itemCount: options.length,
+                itemCount: shown.length,
                 itemBuilder: (context, index) {
-                  final option = options.elementAt(index);
+                  final option = shown[index];
+                  final isAdHoc = adHocSet.contains(option);
                   return InkWell(
                     onTap: () => onSelected(option),
                     child: Padding(
@@ -347,7 +389,27 @@ class _AutocompleteFieldWidget extends StatelessWidget {
                         horizontal: 16,
                         vertical: 12,
                       ),
-                      child: Text(option),
+                      child: isAdHoc
+                          ? Row(
+                              children: [
+                                Text(
+                                  '• ',
+                                  style: TextStyle(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    option,
+                                    style: TextStyle(
+                                      fontStyle: FontStyle.italic,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            )
+                          : Text(option),
                     ),
                   );
                 },
