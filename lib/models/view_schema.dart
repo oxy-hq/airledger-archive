@@ -49,6 +49,12 @@ class ViewSchema {
   /// See [PostLogHook].
   final PostLogHook? postLog;
 
+  /// Named, reusable value sets sourced from the .input.yml's top-level
+  /// `groups:` block. Referenced by `show_when: { ..: in_group: <name> }`
+  /// so fields can share a list (e.g. "isometric exercises") without
+  /// duplicating it on every show_when. Empty when no groups: declared.
+  final Map<String, Set<String>> groups;
+
   ViewSchema({
     required this.name,
     this.description,
@@ -63,6 +69,7 @@ class ViewSchema {
     this.plannable,
     this.icon,
     this.postLog,
+    this.groups = const {},
   });
 
   Dimension? dimensionByName(String name) =>
@@ -126,13 +133,89 @@ class Dimension {
 
   /// Whether this dimension should be visible in the form given the current
   /// values map. Always visible when `show_when` is absent.
-  bool isVisibleGiven(Map<String, Object?> values) {
+  ///
+  /// Each `show_when` entry is `<field>: <predicate>`. All entries are AND'd.
+  /// A predicate is one of:
+  ///   - scalar     → exact-equal match against the field's stringified value
+  ///   - list       → implicit `in` (field value must be one of these)
+  ///   - operator-map with any combination of:
+  ///       eq:           <scalar>           → exact match
+  ///       in:           [<val>, ...]       → field value in this list
+  ///       not_in:       [<val>, ...]       → field value NOT in this list
+  ///       in_group:     <name> or [<name>] → in the union of these groups
+  ///       not_in_group: <name> or [<name>] → in none of these groups
+  ///     All ops in the same map are AND'd.
+  ///
+  /// Groups are named value-sets sourced from the .input.yml's top-level
+  /// `groups:` block (passed in [groups]). They let multiple fields
+  /// reference the same list without duplication — e.g. "isometric
+  /// exercises" defined once, used by weight/reps to hide and by
+  /// duration to show.
+  bool isVisibleGiven(
+    Map<String, Object?> values, [
+    Map<String, Set<String>>? groups,
+  ]) {
     if (showWhen == null) return true;
+    final groupMap = groups ?? const <String, Set<String>>{};
     for (final entry in showWhen!.entries) {
-      final actual = values[entry.key];
-      if (actual?.toString() != entry.value?.toString()) return false;
+      final actual = values[entry.key]?.toString();
+      if (!_evalPredicate(entry.value, actual, groupMap)) return false;
     }
     return true;
+  }
+
+  static bool _evalPredicate(
+    Object? pred,
+    String? actual,
+    Map<String, Set<String>> groups,
+  ) {
+    if (pred == null) return actual == null;
+    if (pred is String || pred is num || pred is bool) {
+      return pred.toString() == actual;
+    }
+    if (pred is List) {
+      return actual != null &&
+          pred.map((e) => e.toString()).contains(actual);
+    }
+    if (pred is Map) {
+      // Every operator in the map must hold (AND).
+      if (pred.containsKey('eq')) {
+        if (pred['eq']?.toString() != actual) return false;
+      }
+      if (pred.containsKey('in')) {
+        final list = (pred['in'] as List).map((e) => e.toString()).toSet();
+        if (actual == null || !list.contains(actual)) return false;
+      }
+      if (pred.containsKey('not_in')) {
+        final list =
+            (pred['not_in'] as List).map((e) => e.toString()).toSet();
+        if (actual != null && list.contains(actual)) return false;
+      }
+      if (pred.containsKey('in_group')) {
+        final names = _asNameList(pred['in_group']);
+        final union = <String>{};
+        for (final n in names) {
+          union.addAll(groups[n] ?? const {});
+        }
+        if (actual == null || !union.contains(actual)) return false;
+      }
+      if (pred.containsKey('not_in_group')) {
+        final names = _asNameList(pred['not_in_group']);
+        final union = <String>{};
+        for (final n in names) {
+          union.addAll(groups[n] ?? const {});
+        }
+        if (actual != null && union.contains(actual)) return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  static List<String> _asNameList(Object? v) {
+    if (v is String) return [v];
+    if (v is List) return v.map((e) => e.toString()).toList();
+    return const [];
   }
 }
 

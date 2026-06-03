@@ -36,6 +36,11 @@ class InputOverlay {
   /// Per-dimension overlays, keyed by dimension name.
   final Map<String, DimensionOverlay> dimensions;
 
+  /// Top-level `groups:` block — named value sets that show_when
+  /// predicates reference via `in_group: <name>` / `not_in_group: <name>`.
+  /// Empty when no groups: declared.
+  final Map<String, Set<String>> groups;
+
   InputOverlay({
     required this.viewName,
     this.dateField,
@@ -45,6 +50,7 @@ class InputOverlay {
     this.icon,
     this.postLog,
     this.dimensions = const {},
+    this.groups = const {},
   });
 }
 
@@ -111,7 +117,25 @@ InputOverlay parseInputOverlay(String yamlText) {
         ? null
         : _parsePostLog(node['post_log'] as YamlMap),
     dimensions: dimensions,
+    groups: _parseGroups(node['groups']),
   );
+}
+
+/// Parses a top-level `groups:` block — `<name>: [val, val, ...]` per
+/// entry. Empty/missing block yields an empty map. Tolerant of YamlMap.
+Map<String, Set<String>> _parseGroups(Object? node) {
+  if (node is! YamlMap) return const {};
+  final out = <String, Set<String>>{};
+  for (final entry in node.entries) {
+    final name = entry.key.toString();
+    final values = entry.value;
+    if (values is YamlList) {
+      out[name] = values.map((e) => e.toString()).toSet();
+    } else if (values is List) {
+      out[name] = values.map((e) => e.toString()).toSet();
+    }
+  }
+  return out;
 }
 
 PostLogHook _parsePostLog(YamlMap node) {
@@ -350,5 +374,6 @@ ViewSchema applyInputOverlay(ViewSchema view, InputOverlay overlay) {
     plannable: overlay.plannable,
     icon: overlay.icon,
     postLog: overlay.postLog,
+    groups: overlay.groups,
   );
 }

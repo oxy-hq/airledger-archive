@@ -163,7 +163,7 @@ class _FormScreenState extends State<FormScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             for (final dim in widget.view.editableDimensions)
-              if (dim.isVisibleGiven(_record)) ...[
+              if (dim.isVisibleGiven(_record, widget.view.groups)) ...[
                 buildFieldWidget(
                   key: ValueKey(dim.name),
                   dim: dim,
@@ -190,13 +190,13 @@ class _FormScreenState extends State<FormScreen> {
     // entered treadmill speed, then switched type to stairmaster) and would
     // otherwise pollute the row.
     for (final dim in widget.view.editableDimensions) {
-      if (!dim.isVisibleGiven(_record)) {
+      if (!dim.isVisibleGiven(_record, widget.view.groups)) {
         _record.remove(dim.name);
       }
     }
     final missing = <String>[];
     for (final dim in widget.view.editableDimensions) {
-      if (!dim.isVisibleGiven(_record)) continue;
+      if (!dim.isVisibleGiven(_record, widget.view.groups)) continue;
       if (dim.input?.required == true && _record[dim.name] == null) {
         missing.add(dim.name);
       }
