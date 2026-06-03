@@ -185,16 +185,31 @@ class ChatToolset {
       run: (input) async {
         final v = view!;
         await _ensureSynced(v);
-        // Build airlayer query. measure/dim names are passed bare —
-        // airlayer auto-prefixes with the view name on compile.
+        // Build airlayer query. Filters are translated from the
+        // user-friendly {dim, op, value} shape advertised in the tool
+        // schema to airlayer's {member, operator, values} shape — same
+        // mapping app_runtime uses for .app.yml semantic queries.
         final query = <String, dynamic>{};
         final measures = (input['measures'] as List?)?.cast<dynamic>();
         if (measures != null) query['measures'] = measures;
         final dims = (input['dimensions'] as List?)?.cast<dynamic>();
         if (dims != null && dims.isNotEmpty) query['dimensions'] = dims;
-        final filters = (input['filters'] as List?)?.cast<dynamic>();
-        if (filters != null && filters.isNotEmpty) {
-          query['filters'] = filters;
+        final rawFilters = (input['filters'] as List?)?.cast<dynamic>();
+        if (rawFilters != null && rawFilters.isNotEmpty) {
+          final translated = <Map<String, dynamic>>[];
+          for (final f in rawFilters) {
+            if (f is! Map) continue;
+            final dim = (f['dim'] ?? f['field'] ?? f['member'])?.toString();
+            final op = (f['op'] ?? f['operator'] ?? '=').toString();
+            final value = f['value'] ?? f['values'];
+            if (dim == null || value == null) continue;
+            translated.add({
+              'member': dim,
+              'operator': _airlayerOp(op),
+              'values': value is List ? value : [value],
+            });
+          }
+          if (translated.isNotEmpty) query['filters'] = translated;
         }
         final order = (input['order'] as List?)?.cast<dynamic>();
         if (order != null && order.isNotEmpty) query['order'] = order;
@@ -595,6 +610,38 @@ class ChatToolset {
         return 'PR opened: #${pr.number} ${pr.htmlUrl}';
       },
     );
+  }
+
+  /// Map user-facing op aliases to the textual operator names airlayer's
+  /// filter grammar expects. Mirrors app_runtime._airlayerOp so the chat's
+  /// run_query and .app.yml semantic_query tasks behave the same way.
+  static String _airlayerOp(String op) {
+    switch (op) {
+      case 'eq':
+      case '=':
+      case '==':
+        return 'equals';
+      case 'neq':
+      case '!=':
+      case '<>':
+        return 'notEquals';
+      case 'in':
+        return 'equals';
+      case 'gt':
+      case '>':
+        return 'gt';
+      case 'gte':
+      case '>=':
+        return 'gte';
+      case 'lt':
+      case '<':
+        return 'lt';
+      case 'lte':
+      case '<=':
+        return 'lte';
+      default:
+        return op;
+    }
   }
 
   static String _stringifyVal(Object? v) {

@@ -121,6 +121,10 @@ class _ChatScreenState extends State<ChatScreen> {
           "numbers and exercise names, bullet lists for sets/options, "
           "and `code spans` for field names and template names. Keep "
           "it scannable — short bullets > prose for any list of facts.",
+      "",
+      "When a tool errors, show the raw error message verbatim in a "
+          "code block so the user can debug. Don't soften it to 'I'm "
+          "having trouble' — that hides what actually broke.",
     ];
     if (widget.view != null) {
       lines.addAll([
