@@ -7,6 +7,7 @@ import 'package:jinja/jinja.dart' hide Template;
 import '../models/model_config.dart';
 import '../models/planned_entry.dart';
 import '../models/view_schema.dart';
+import '../services/analytics_engine.dart';
 import '../services/derive.dart';
 import '../services/github_client.dart';
 import '../services/list_display_render.dart';
@@ -73,6 +74,10 @@ class TimelineScreen extends StatefulWidget {
   final ModelConfig? chatModel;
   final GithubClient? github;
 
+  /// AnalyticsEngine for the chat's run_query tool. Null when airlayer
+  /// failed to load.
+  final AnalyticsEngine? analytics;
+
   const TimelineScreen({
     super.key,
     required this.view,
@@ -81,6 +86,7 @@ class TimelineScreen extends StatefulWidget {
     this.llmCache,
     this.chatModel,
     this.github,
+    this.analytics,
   });
 
   @override
@@ -242,6 +248,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                     github: widget.github,
                     view: widget.view,
                     repository: widget.repository,
+                    analytics: widget.analytics,
                     selectedDate: _selectedDate,
                   ),
                 ),

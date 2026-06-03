@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../models/planned_entry.dart';
 import '../models/view_schema.dart';
+import 'analytics_engine.dart';
 import 'chat_runner.dart';
 import 'github_client.dart';
 import 'plan_store.dart';
@@ -31,6 +32,14 @@ class ChatToolset {
   final ViewSchema? view;
   final SheetsRepository? repository;
 
+  /// AnalyticsEngine (airlayer + LocalDb). When non-null and a view is
+  /// in scope, the chat can call run_query to ask history questions —
+  /// max squat in the last 6 months, total volume last week, etc. Per
+  /// chat session we lazy-sync each view's sheet → SQLite cache on
+  /// first query; tracked via [_syncedViews].
+  final AnalyticsEngine? analytics;
+  final Set<String> _syncedViews = {};
+
   /// Date the user is currently viewing in the timeline (used as the
   /// default for apply_template). Defaults to today when chat is opened
   /// from HomeScreen or any caller that doesn't have a selected date.
@@ -40,8 +49,18 @@ class ChatToolset {
     this.github,
     this.view,
     this.repository,
+    this.analytics,
     DateTime? selectedDate,
   }) : selectedDate = selectedDate ?? _today();
+
+  /// Lazy-sync the view's sheet rows into LocalDb. No-op when analytics
+  /// or repository are unavailable, or after the first call per session.
+  Future<void> _ensureSynced(ViewSchema v) async {
+    if (analytics == null || repository == null) return;
+    if (_syncedViews.contains(v.name)) return;
+    await analytics!.db.syncFromSheet(v, repository!);
+    _syncedViews.add(v.name);
+  }
 
   static DateTime _today() {
     final n = DateTime.now();
@@ -51,6 +70,7 @@ class ChatToolset {
   List<ChatTool> build() {
     return [
       if (view != null) _readScreenContext(),
+      if (view != null && analytics != null) _runQuery(),
       if (view != null) _listTemplates(),
       if (view != null) _readTemplate(),
       if (view != null) _applyTemplate(),
@@ -66,10 +86,11 @@ class ChatToolset {
     return ChatTool(
       name: 'read_screen_context',
       description:
-          'Returns the currently-open view: its name, description, '
-          'dimensions (with types), and the 20 most recent logged rows. '
-          'Call this first when the user asks about "this view" or "my '
-          'data" — saves you from guessing what they\'re looking at.',
+          'Returns the currently-open view: name, description, '
+          'dimensions, measures, and the 20 most recent logged rows. '
+          'Call this FIRST whenever the user asks about "this view" '
+          'or "my data" — gives you the schema so you know what to '
+          'query and what to render.',
       inputSchema: const {
         'type': 'object',
         'properties': <String, dynamic>{},
@@ -81,6 +102,12 @@ class ChatToolset {
               'name': d.name,
               'type': d.type.name,
               if (d.description != null) 'description': d.description,
+            }).toList();
+        final meas = v.measures.map((m) => {
+              'name': m.name,
+              'type': m.type.name,
+              if (m.expr != null) 'expr': m.expr,
+              if (m.description != null) 'description': m.description,
             }).toList();
         List<Map<String, Object?>>? recent;
         if (repo != null) {
@@ -98,7 +125,85 @@ class ChatToolset {
           'view': v.name,
           'description': v.description,
           'dimensions': dims,
+          'measures': meas,
           if (recent != null) 'recent_rows': recent,
+        });
+      },
+    );
+  }
+
+  ChatTool _runQuery() {
+    return ChatTool(
+      name: 'run_query',
+      description:
+          'Runs an aggregate query against the current view\'s '
+          'history via the airlayer semantic layer. Use this to answer '
+          '"what\'s my max squat", "how much volume last week", "how '
+          'many sets per exercise this month" — anything that needs '
+          'an aggregation over many rows, vs. read_screen_context '
+          'which only returns the last 20.\n\n'
+          'Query shape mirrors airlayer:\n'
+          '  measures:   list of measure names (e.g. ["max_e1rm"])\n'
+          '  dimensions: optional group-by (e.g. ["exercise"])\n'
+          '  filters:    optional list of {dim, op, value} where op '
+          'is = / != / > / >= / < / <= / in\n'
+          '  order:      optional list of {by, dir} where dir is asc/desc\n'
+          '  limit:      optional int\n\n'
+          'Call read_screen_context first to learn the view\'s measure '
+          'names; passing an unknown one errors. First call per chat '
+          'syncs sheet → SQLite cache (slow); subsequent calls are fast.',
+      inputSchema: const {
+        'type': 'object',
+        'properties': {
+          'measures': {
+            'type': 'array',
+            'items': {'type': 'string'},
+            'description': 'Measure names to compute.',
+          },
+          'dimensions': {
+            'type': 'array',
+            'items': {'type': 'string'},
+            'description': 'Optional group-by dimensions.',
+          },
+          'filters': {
+            'type': 'array',
+            'items': {'type': 'object'},
+            'description': 'Optional {dim, op, value} filters.',
+          },
+          'order': {
+            'type': 'array',
+            'items': {'type': 'object'},
+            'description': 'Optional [{by: <name>, dir: asc|desc}].',
+          },
+          'limit': {
+            'type': 'integer',
+            'description': 'Optional row cap.',
+          },
+        },
+        'required': ['measures'],
+      },
+      run: (input) async {
+        final v = view!;
+        await _ensureSynced(v);
+        // Build airlayer query. measure/dim names are passed bare —
+        // airlayer auto-prefixes with the view name on compile.
+        final query = <String, dynamic>{};
+        final measures = (input['measures'] as List?)?.cast<dynamic>();
+        if (measures != null) query['measures'] = measures;
+        final dims = (input['dimensions'] as List?)?.cast<dynamic>();
+        if (dims != null && dims.isNotEmpty) query['dimensions'] = dims;
+        final filters = (input['filters'] as List?)?.cast<dynamic>();
+        if (filters != null && filters.isNotEmpty) {
+          query['filters'] = filters;
+        }
+        final order = (input['order'] as List?)?.cast<dynamic>();
+        if (order != null && order.isNotEmpty) query['order'] = order;
+        if (input['limit'] != null) query['limit'] = input['limit'];
+        final rows = await analytics!.run(v, query: query);
+        return const JsonEncoder.withIndent('  ').convert({
+          'view': v.name,
+          'row_count': rows.length,
+          'rows': rows,
         });
       },
     );

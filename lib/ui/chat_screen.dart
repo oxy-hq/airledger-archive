@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:intl/intl.dart';
 
 import '../models/model_config.dart';
 import '../models/view_schema.dart';
+import '../services/analytics_engine.dart';
 import '../services/chat_runner.dart';
 import '../services/chat_tools.dart';
 import '../services/github_client.dart';
@@ -23,6 +25,11 @@ class ChatScreen extends StatefulWidget {
   final ViewSchema? view;
   final SheetsRepository? repository;
 
+  /// Airlayer + LocalDb. Enables the chat's run_query tool for ad-hoc
+  /// aggregates over history (max squat, total volume last week, etc).
+  /// Optional — chat opens fine without it, just no run_query.
+  final AnalyticsEngine? analytics;
+
   /// The date the user has selected on the timeline. apply_template
   /// defaults its target date to this when the user doesn't specify
   /// otherwise (so "apply cut_squat_heavy" plans for the day they're
@@ -35,6 +42,7 @@ class ChatScreen extends StatefulWidget {
     this.github,
     this.view,
     this.repository,
+    this.analytics,
     this.selectedDate,
   });
 
@@ -54,6 +62,7 @@ class _ChatScreenState extends State<ChatScreen> {
     github: widget.github,
     view: widget.view,
     repository: widget.repository,
+    analytics: widget.analytics,
     selectedDate: widget.selectedDate,
   );
 
@@ -66,9 +75,16 @@ class _ChatScreenState extends State<ChatScreen> {
       "",
       "Capabilities you have via tools:",
       if (widget.view != null) ...[
-        "- read_screen_context: dump the view the user is looking at + "
-            "recent rows. Call this when they ask about 'this view' / "
-            "'my data'.",
+        "- read_screen_context: dump the view's schema (dimensions, "
+            "measures) + 20 most recent rows. Call FIRST when the user "
+            "asks about 'this view' / 'my data' — it tells you which "
+            "measure/dim names you can query.",
+        if (widget.analytics != null)
+          "- run_query: aggregate query against full history via "
+              "airlayer. Use for 'max squat', 'total volume last week', "
+              "'sets per exercise last month' — anything that needs to "
+              "look at more than the 20 recent rows. Shape: "
+              "{measures, dimensions?, filters?, order?, limit?}.",
         "- list_templates / read_template: discover what plans are "
             "available for this view, with their variable specs.",
         "- apply_template: create planned (not-yet-logged) entries on "
@@ -93,9 +109,18 @@ class _ChatScreenState extends State<ChatScreen> {
           "they've done recently, then SUGGEST a template + reasoned "
           "variable values. Wait for confirm before applying.",
       "",
+      "For 'what's my max X' or 'how much volume last week' style "
+          "questions: use run_query — read_screen_context's recent "
+          "rows only show 20, run_query goes against all history.",
+      "",
       "For schema/template edits: fetch the current file first "
           "(read_repo_file), show the diff in plain English, wait for "
           "confirm before calling propose_change.",
+      "",
+      "Format responses as Markdown. Use **bold** for emphasis on "
+          "numbers and exercise names, bullet lists for sets/options, "
+          "and `code spans` for field names and template names. Keep "
+          "it scannable — short bullets > prose for any list of facts.",
     ];
     if (widget.view != null) {
       lines.addAll([
@@ -305,7 +330,30 @@ class _MsgBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SelectableText(msg.text),
+              // User messages stay plain text (no markdown parsing on
+              // user input — what they type is what they meant).
+              // Assistant messages get rendered as Markdown so bullets,
+              // bold, headers, and code spans display properly.
+              if (isUser)
+                SelectableText(msg.text)
+              else
+                MarkdownBody(
+                  data: msg.text,
+                  selectable: true,
+                  styleSheet: MarkdownStyleSheet.fromTheme(
+                    Theme.of(context),
+                  ).copyWith(
+                    p: Theme.of(context).textTheme.bodyMedium,
+                    code: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontFamily: 'monospace',
+                          backgroundColor: scheme.surfaceContainerHighest,
+                        ),
+                    codeblockDecoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                ),
               if (msg.toolCalls > 0)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),

@@ -30,6 +30,7 @@ dependencies:
   airlayer:
     path: ../airlayer/sdk-dart
   fl_chart: ^0.69.0
+  flutter_markdown_plus: ^1.0.3
 
 dev_dependencies:
   flutter_test:

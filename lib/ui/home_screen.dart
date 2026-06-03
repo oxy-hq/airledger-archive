@@ -5,6 +5,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../models/github_config.dart';
 import '../models/model_config.dart';
 import '../models/view_schema.dart';
+import '../services/analytics_engine.dart';
 import '../services/app_config.dart';
 import '../services/connector_registry.dart';
 import '../services/github_client.dart';
@@ -72,6 +73,16 @@ class _HomeScreenState extends State<HomeScreen> {
         : LlmClient(assetConfig.models);
     final llmCache =
         assetConfig.disablePostLog ? null : LlmResponseCache();
+    // AnalyticsEngine = airlayer compiler + LocalDb SQLite cache. Used by
+    // the chat's run_query tool. Best-effort: if the native lib fails to
+    // load on this platform, the chat opens without run_query and the
+    // rest of the app keeps working.
+    AnalyticsEngine? analytics;
+    try {
+      analytics = await AnalyticsEngine.create();
+    } catch (_) {
+      analytics = null;
+    }
     return _Bootstrap(
       views: views,
       repository: repo,
@@ -81,6 +92,7 @@ class _HomeScreenState extends State<HomeScreen> {
       llmCache: llmCache,
       models: assetConfig.models,
       github: assetConfig.github,
+      analytics: analytics,
     );
   }
 
@@ -152,6 +164,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         model: chatModel,
                         github:
                             github == null ? null : GithubClient(github),
+                        analytics: boot?.analytics,
                       ),
                     ),
                   ),
@@ -235,6 +248,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 github: github == null
                                     ? null
                                     : GithubClient(github),
+                                analytics: data.analytics,
                               ),
                             ),
                           ),
@@ -272,6 +286,10 @@ class _Bootstrap {
   /// buttons.
   final GithubConfig? github;
 
+  /// Airlayer + LocalDb wrapper. Drives the chat's run_query tool.
+  /// Null when the native lib can't load on this platform.
+  final AnalyticsEngine? analytics;
+
   _Bootstrap({
     required this.views,
     required this.repository,
@@ -281,6 +299,7 @@ class _Bootstrap {
     required this.llmCache,
     required this.models,
     required this.github,
+    required this.analytics,
   });
 }
 
