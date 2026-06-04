@@ -1,52 +1,126 @@
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
-/// A bubble shown in the chat UI — what the user sees, separate from the
-/// raw conversation turns sent to the LLM. Tool-result + tool-use turns
-/// (which fly between the model and the chat-runner) don't appear here;
-/// the UI shows user text + assistant text only, plus a small
-/// "N tool calls" caption when the assistant invoked anything.
+/// One element of an assistant turn — text, a tool call, or a thinking
+/// block. The UI renders them in order so the user sees the actual
+/// interleaving the model produced.
+sealed class DisplayStep {
+  Map<String, dynamic> toJson();
+  static DisplayStep fromJson(Map<String, dynamic> json) {
+    final t = json['type'] as String;
+    switch (t) {
+      case 'text':
+        return TextStep(json['text'] as String);
+      case 'thinking':
+        return ThinkingStep(json['text'] as String);
+      case 'tool_call':
+        return ToolCallStep(
+          id: json['id'] as String,
+          name: json['name'] as String,
+          input: (json['input'] as Map?)?.cast<String, dynamic>() ??
+              const {},
+          result: json['result'] as String?,
+          isError: (json['is_error'] as bool?) ?? false,
+        );
+      default:
+        return TextStep('');
+    }
+  }
+}
+
+class TextStep extends DisplayStep {
+  String text;
+  TextStep(this.text);
+  @override
+  Map<String, dynamic> toJson() => {'type': 'text', 'text': text};
+}
+
+class ThinkingStep extends DisplayStep {
+  String text;
+  ThinkingStep(this.text);
+  @override
+  Map<String, dynamic> toJson() => {'type': 'thinking', 'text': text};
+}
+
+class ToolCallStep extends DisplayStep {
+  final String id;
+  final String name;
+  Map<String, dynamic> input;
+  String? result;
+  bool isError;
+  ToolCallStep({
+    required this.id,
+    required this.name,
+    this.input = const {},
+    this.result,
+    this.isError = false,
+  });
+  @override
+  Map<String, dynamic> toJson() => {
+        'type': 'tool_call',
+        'id': id,
+        'name': name,
+        if (input.isNotEmpty) 'input': input,
+        if (result != null) 'result': result,
+        if (isError) 'is_error': true,
+      };
+}
+
+/// A bubble shown in the chat UI — what the user sees. Assistant
+/// messages are a list of [DisplayStep]s (text + tool_call + thinking,
+/// in order). User messages are a single [TextStep].
 class DisplayMessage {
   final String role; // 'user' | 'assistant'
-  final String text;
-  final int toolCalls;
+  final List<DisplayStep> steps;
   final bool truncated;
 
   DisplayMessage({
     required this.role,
-    required this.text,
-    this.toolCalls = 0,
+    required this.steps,
     this.truncated = false,
   });
 
-  factory DisplayMessage.user(String text) =>
-      DisplayMessage(role: 'user', text: text);
-
-  factory DisplayMessage.assistant(
-    String text, {
-    int toolCalls = 0,
-    bool truncated = false,
-  }) =>
-      DisplayMessage(
-        role: 'assistant',
-        text: text,
-        toolCalls: toolCalls,
-        truncated: truncated,
+  factory DisplayMessage.user(String text) => DisplayMessage(
+        role: 'user',
+        steps: [TextStep(text)],
       );
+
+  /// Convenience: concatenated text across all [TextStep]s. Used for
+  /// the history-list title preview, and as a fallback when older
+  /// persisted messages don't have step granularity.
+  String get text {
+    return steps.whereType<TextStep>().map((s) => s.text).join('\n');
+  }
+
+  int get toolCallCount => steps.whereType<ToolCallStep>().length;
 
   Map<String, dynamic> toJson() => {
         'role': role,
-        'text': text,
-        if (toolCalls > 0) 'tool_calls': toolCalls,
+        'steps': [for (final s in steps) s.toJson()],
         if (truncated) 'truncated': true,
       };
 
-  factory DisplayMessage.fromJson(Map<String, dynamic> json) => DisplayMessage(
+  factory DisplayMessage.fromJson(Map<String, dynamic> json) {
+    // New format: { role, steps: [...] }
+    if (json['steps'] is List) {
+      return DisplayMessage(
         role: json['role'] as String,
-        text: json['text'] as String,
-        toolCalls: (json['tool_calls'] as int?) ?? 0,
+        steps: [
+          for (final s in json['steps'] as List)
+            DisplayStep.fromJson((s as Map).cast<String, dynamic>()),
+        ],
         truncated: (json['truncated'] as bool?) ?? false,
       );
+    }
+    // Legacy format: { role, text, tool_calls?, truncated? } —
+    // historical sessions that pre-date steps. Collapse to one
+    // TextStep so they still render.
+    return DisplayMessage(
+      role: json['role'] as String,
+      steps: [TextStep((json['text'] as String?) ?? '')],
+      truncated: (json['truncated'] as bool?) ?? false,
+    );
+  }
 }
 
 /// One persisted chat — what the history screen lists and what

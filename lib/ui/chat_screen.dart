@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:intl/intl.dart';
@@ -86,7 +88,14 @@ class _ChatScreenState extends State<ChatScreen> {
     selectedDate: widget.selectedDate,
   );
 
-  late final ChatRunner _runner = ChatRunner(widget.model);
+  // Extended thinking on — the model may pause to reason between text
+  // and tool calls and the UI surfaces it (collapsible by default).
+  // Sonnet 4.x supports it; older models will 400 and the user can
+  // disable in code if they switch back.
+  late final ChatRunner _runner = ChatRunner(
+    widget.model,
+    enableThinking: true,
+  );
 
   String get _systemPrompt {
     final lines = <String>[
@@ -221,24 +230,75 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _compacting = false);
       }
 
-      final result = await _runner.run(
+      // Add an empty assistant message; the stream fills its steps as
+      // events arrive. Keep a direct ref so setState mutations are
+      // visible to ListView (same object identity stays in _displayed).
+      final assistant = DisplayMessage(role: 'assistant', steps: []);
+      setState(() => _displayed.add(assistant));
+
+      // Pointers into assistant.steps for the currently-open text /
+      // thinking step. Reset to null when their block closes or when a
+      // tool call lands (so the next text/thinking chunk opens a fresh
+      // step after the tool).
+      TextStep? openText;
+      ThinkingStep? openThinking;
+      final toolStepById = <String, ToolCallStep>{};
+
+      await for (final ev in _runner.runStream(
         systemPrompt: _systemPrompt,
-        conversation: _history,
+        initialConversation: _history,
         tools: _toolset.build(),
-      );
+      )) {
+        if (!mounted) return;
+        setState(() {
+          if (ev is TextDelta) {
+            if (openText == null) {
+              openText = TextStep('');
+              assistant.steps.add(openText!);
+            }
+            openText!.text += ev.chunk;
+          } else if (ev is ThinkingDelta) {
+            if (openThinking == null) {
+              openThinking = ThinkingStep('');
+              assistant.steps.add(openThinking!);
+            }
+            openThinking!.text += ev.chunk;
+          } else if (ev is ToolUseStart) {
+            // Tool block always closes any open text/thinking next to
+            // it. Render order = arrival order.
+            openText = null;
+            openThinking = null;
+            final step = ToolCallStep(id: ev.id, name: ev.name);
+            toolStepById[ev.id] = step;
+            assistant.steps.add(step);
+          } else if (ev is ToolUseExecuting) {
+            final step = toolStepById[ev.id];
+            if (step != null) step.input = ev.input;
+          } else if (ev is ToolUseResult) {
+            final step = toolStepById[ev.id];
+            if (step != null) {
+              step.result = ev.result;
+              step.isError = ev.isError;
+            }
+          } else if (ev is BlockEnded) {
+            if (ev.blockType == 'text') openText = null;
+            if (ev.blockType == 'thinking') openThinking = null;
+          } else if (ev is TurnComplete) {
+            _history
+              ..clear()
+              ..addAll(ev.conversation);
+            // Stash truncated flag — UI surfaces it in the caption.
+            if (ev.truncated) {
+              final asMutable =
+                  DisplayMessage(role: 'assistant', steps: assistant.steps, truncated: true);
+              _displayed[_displayed.length - 1] = asMutable;
+            }
+          }
+        });
+        _scrollToBottom();
+      }
       if (!mounted) return;
-      setState(() {
-        _history
-          ..clear()
-          ..addAll(result.conversation);
-        _displayed.add(DisplayMessage.assistant(
-          result.text.isEmpty ? '(no response)' : result.text,
-          toolCalls: result.toolCallCount,
-          truncated: result.truncated,
-        ));
-        _sending = false;
-      });
-      _scrollToBottom();
+      setState(() => _sending = false);
       await _persist();
     } catch (e) {
       if (!mounted) return;
@@ -471,54 +531,23 @@ class _MsgBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // User messages stay plain text (no markdown parsing on
-              // user input — what they type is what they meant).
-              // Assistant messages get rendered as Markdown so bullets,
-              // bold, headers, and code spans display properly.
+              // User messages render as plain text (no markdown — what they
+              // typed is what they meant). Assistant messages walk the
+              // step list so text / thinking / tool-call bubbles render
+              // in the order the model produced them.
               if (isUser)
                 SelectableText(msg.text)
               else
-                MarkdownBody(
-                  data: msg.text,
-                  selectable: true,
-                  styleSheet: MarkdownStyleSheet.fromTheme(
-                    Theme.of(context),
-                  ).copyWith(
-                    p: Theme.of(context).textTheme.bodyMedium,
-                    code: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          fontFamily: 'monospace',
-                          backgroundColor: scheme.surfaceContainerHighest,
-                        ),
-                    codeblockDecoration: BoxDecoration(
-                      color: scheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    // Blockquote — explicit colors instead of theme
-                    // defaults, which were picking up primaryContainer
-                    // (light blue) for both bg and text and rendering
-                    // unreadably on light themes.
-                    blockquote:
-                        Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: scheme.onSurface,
-                              fontStyle: FontStyle.italic,
-                            ),
-                    blockquoteDecoration: BoxDecoration(
-                      color: scheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border(
-                        left: BorderSide(color: scheme.primary, width: 3),
-                      ),
-                    ),
-                    blockquotePadding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+                for (var i = 0; i < msg.steps.length; i++)
+                  Padding(
+                    padding: EdgeInsets.only(top: i == 0 ? 0 : 6),
+                    child: _StepView(step: msg.steps[i]),
                   ),
-                ),
-              if (msg.toolCalls > 0)
+              if (msg.truncated)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text(
-                    msg.truncated
-                        ? '${msg.toolCalls} tool call(s) · loop truncated'
-                        : '${msg.toolCalls} tool call(s)',
+                    'loop truncated',
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(
                           color: scheme.onSurfaceVariant,
                           fontStyle: FontStyle.italic,
@@ -558,5 +587,279 @@ class _EmptyHint extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Renders one DisplayStep — switches on the subtype.
+class _StepView extends StatelessWidget {
+  final DisplayStep step;
+  const _StepView({required this.step});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = step;
+    if (s is TextStep) return _TextStepView(text: s.text);
+    if (s is ThinkingStep) return _ThinkingStepView(text: s.text);
+    if (s is ToolCallStep) return _ToolCallStepView(step: s);
+    return const SizedBox.shrink();
+  }
+}
+
+class _TextStepView extends StatelessWidget {
+  final String text;
+  const _TextStepView({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    if (text.isEmpty) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return MarkdownBody(
+      data: text,
+      selectable: true,
+      styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+        p: Theme.of(context).textTheme.bodyMedium,
+        code: Theme.of(context).textTheme.bodySmall?.copyWith(
+              fontFamily: 'monospace',
+              backgroundColor: scheme.surfaceContainerHighest,
+            ),
+        codeblockDecoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        blockquote: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: scheme.onSurface,
+              fontStyle: FontStyle.italic,
+            ),
+        blockquoteDecoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(4),
+          border: Border(
+            left: BorderSide(color: scheme.primary, width: 3),
+          ),
+        ),
+        blockquotePadding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+      ),
+    );
+  }
+}
+
+/// Collapsed by default — most reasoning chains are long and the user
+/// doesn't need to read them every time, but they're available for the
+/// rare moment they want to see why the model picked what it did.
+class _ThinkingStepView extends StatefulWidget {
+  final String text;
+  const _ThinkingStepView({required this.text});
+
+  @override
+  State<_ThinkingStepView> createState() => _ThinkingStepViewState();
+}
+
+class _ThinkingStepViewState extends State<_ThinkingStepView> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.text.isEmpty) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _open = !_open),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  _open
+                      ? Icons.keyboard_arrow_down
+                      : Icons.keyboard_arrow_right,
+                  size: 16,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'thinking',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        fontStyle: FontStyle.italic,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          if (_open)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, left: 4, right: 4),
+              child: SelectableText(
+                widget.text,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      fontStyle: FontStyle.italic,
+                      height: 1.4,
+                    ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Small chip-card for one tool call: icon + name + status.
+///   - input not yet known    → grey wrench icon, "calling"
+///   - executing              → spinner
+///   - result without error   → green check
+///   - result with error      → red triangle, expandable to show message
+class _ToolCallStepView extends StatefulWidget {
+  final ToolCallStep step;
+  const _ToolCallStepView({required this.step});
+
+  @override
+  State<_ToolCallStepView> createState() => _ToolCallStepViewState();
+}
+
+class _ToolCallStepViewState extends State<_ToolCallStepView> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.step;
+    final scheme = Theme.of(context).colorScheme;
+    final hasResult = s.result != null;
+    final bg = s.isError
+        ? scheme.errorContainer
+        : scheme.surfaceContainerHighest;
+    final fg = s.isError ? scheme.onErrorContainer : scheme.onSurfaceVariant;
+    return Container(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: hasResult || s.input.isNotEmpty
+                ? () => setState(() => _expanded = !_expanded)
+                : null,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _statusIcon(s, fg),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    s.name,
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                          color: fg,
+                          fontFamily: 'monospace',
+                        ),
+                  ),
+                ),
+                if (hasResult || s.input.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                      size: 14,
+                      color: fg,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          if (_expanded) ...[
+            if (s.input.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: _detail('input', _jsonShort(s.input), fg, scheme),
+              ),
+            if (s.result != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: _detail(
+                  s.isError ? 'error' : 'result',
+                  _trimResult(s.result!),
+                  fg,
+                  scheme,
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _statusIcon(ToolCallStep s, Color fg) {
+    if (s.result == null) {
+      return SizedBox(
+        width: 12,
+        height: 12,
+        child: CircularProgressIndicator(strokeWidth: 1.5, color: fg),
+      );
+    }
+    return Icon(
+      s.isError ? Icons.error_outline : Icons.check_circle_outline,
+      size: 14,
+      color: fg,
+    );
+  }
+
+  Widget _detail(
+    String label,
+    String body,
+    Color fg,
+    ColorScheme scheme,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: fg),
+        ),
+        const SizedBox(height: 2),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: scheme.surface,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: SelectableText(
+            body,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  height: 1.35,
+                ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _jsonShort(Map<String, dynamic> input) {
+    final encoded = const JsonEncoder.withIndent('  ').convert(input);
+    return _trimResult(encoded);
+  }
+
+  /// Result blobs from list_repo_dir / read_repo_file / run_query can be
+  /// huge — trim so the UI doesn't choke. The full body is still in the
+  /// LLM's conversation history.
+  String _trimResult(String s) {
+    const cap = 1500;
+    if (s.length <= cap) return s;
+    return '${s.substring(0, cap)}\n… (${s.length - cap} more chars)';
   }
 }
