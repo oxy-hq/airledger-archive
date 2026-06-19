@@ -41,6 +41,14 @@ class InputOverlay {
   /// Empty when no groups: declared.
   final Map<String, Set<String>> groups;
 
+  /// Optional name of a measure used to score rows for the history panel's
+  /// per-day "top" highlight. See [ViewSchema.topMetric].
+  final String? topMetric;
+
+  /// Optional repeat-group declaration (which fields fan out into N rows).
+  /// See [RepeatGroup].
+  final RepeatGroup? repeatGroup;
+
   InputOverlay({
     required this.viewName,
     this.dateField,
@@ -51,6 +59,8 @@ class InputOverlay {
     this.postLog,
     this.dimensions = const {},
     this.groups = const {},
+    this.topMetric,
+    this.repeatGroup,
   });
 }
 
@@ -118,6 +128,34 @@ InputOverlay parseInputOverlay(String yamlText) {
         : _parsePostLog(node['post_log'] as YamlMap),
     dimensions: dimensions,
     groups: _parseGroups(node['groups']),
+    topMetric: node['top_metric'] as String?,
+    repeatGroup: _parseRepeatGroup(node['repeat_group']),
+  );
+}
+
+/// Parses a top-level `repeat_group:` block. Returns null when absent.
+/// Required keys: `fields:` (list of strings), `label:` (string).
+/// Optional: `min:` (int, default 1).
+RepeatGroup? _parseRepeatGroup(Object? node) {
+  if (node == null) return null;
+  if (node is! YamlMap) {
+    throw const FormatException('repeat_group: must be a map');
+  }
+  final fields = node['fields'];
+  if (fields is! YamlList || fields.isEmpty) {
+    throw const FormatException(
+      'repeat_group.fields: must be a non-empty list of field names',
+    );
+  }
+  final label = node['label'];
+  if (label is! String || label.isEmpty) {
+    throw const FormatException('repeat_group.label: must be a non-empty string');
+  }
+  return RepeatGroup(
+    fields: fields.map((e) => e.toString()).toList(),
+    label: label,
+    min: (node['min'] as int?) ?? 1,
+    groupKey: node['group_key'] as String?,
   );
 }
 
@@ -229,6 +267,10 @@ bool _looksLikeFormSpec(YamlMap node) {
     'placeholder',
     'editable',
     'now_button',
+    'history',
+    'ladders',
+    'stop_target',
+    'stop_targets',
   };
   return formKeys.any(node.containsKey);
 }
@@ -253,7 +295,72 @@ InputSpec _parseInput(YamlMap node) {
     placeholder: node['placeholder'] as String?,
     editable: (node['editable'] as bool?) ?? true,
     nowButton: (node['now_button'] as bool?) ?? false,
+    history: (node['history'] as bool?) ?? false,
+    ladders: _parseLadders(node['ladders']),
+    stopTargets: _parseStopTargets(node),
   );
+}
+
+/// Parses the timer's stop config. Accepts two shapes:
+///   - `stop_target: <name>` — shortcut for one target with format `elapsed`
+///   - `stop_targets: [{target, format}, ...]` — full form
+/// `format` is one of: `elapsed` (default), `seconds`, `time_of_day`.
+/// Returns null when neither key is set.
+List<TimerStopTarget>? _parseStopTargets(YamlMap node) {
+  final list = node['stop_targets'];
+  if (list is YamlList) {
+    return list.map<TimerStopTarget>((entry) {
+      if (entry is! YamlMap) {
+        throw const FormatException(
+          'stop_targets[]: each entry must be a map with target [+ format]',
+        );
+      }
+      return TimerStopTarget(
+        target: _requireString(entry, 'target'),
+        format: _parseTimerStopFormat(
+          (entry['format'] as String?) ?? 'elapsed',
+        ),
+      );
+    }).toList();
+  }
+  final single = node['stop_target'] as String?;
+  if (single != null) {
+    return [TimerStopTarget(target: single, format: TimerStopFormat.elapsed)];
+  }
+  return null;
+}
+
+TimerStopFormat _parseTimerStopFormat(String s) {
+  switch (s) {
+    case 'elapsed':
+      return TimerStopFormat.elapsed;
+    case 'seconds':
+      return TimerStopFormat.seconds;
+    case 'time_of_day':
+      return TimerStopFormat.timeOfDay;
+    default:
+      throw FormatException('Unknown timer stop format: $s');
+  }
+}
+
+/// Parses `ladders: [{label, target}, ...]` from a timer widget's field
+/// config. Returns null when absent.
+List<TimerLadder>? _parseLadders(Object? node) {
+  if (node == null) return null;
+  if (node is! YamlList) {
+    throw const FormatException('ladders: must be a list');
+  }
+  return node.map<TimerLadder>((entry) {
+    if (entry is! YamlMap) {
+      throw const FormatException(
+        'ladders[]: each entry must be a map with label + target',
+      );
+    }
+    return TimerLadder(
+      label: _requireString(entry, 'label'),
+      target: _requireString(entry, 'target'),
+    );
+  }).toList();
 }
 
 Derive _parseDerive(YamlMap node) {
@@ -295,6 +402,8 @@ WidgetType _parseWidgetType(String s) {
       return WidgetType.date;
     case 'datetime':
       return WidgetType.datetime;
+    case 'timer':
+      return WidgetType.timer;
     case 'dropdown':
       return WidgetType.dropdown;
     case 'autocomplete':
@@ -346,6 +455,18 @@ ViewSchema applyInputOverlay(ViewSchema view, InputOverlay overlay) {
       );
     }
   }
+  // top_metric must point at a real measure on the .view.yml. Without this
+  // check the history-panel highlight silently no-ops at render time,
+  // which is hard to debug.
+  if (overlay.topMetric != null) {
+    final measureNames = {for (final m in view.measures) m.name};
+    if (!measureNames.contains(overlay.topMetric)) {
+      throw FormatException(
+        '.input.yml top_metric "${overlay.topMetric}" '
+        'is not declared as a measure on .view.yml ($measureNames)',
+      );
+    }
+  }
   final newDimensions = view.dimensions.map((d) {
     final o = overlay.dimensions[d.name];
     if (o == null) return d;
@@ -375,5 +496,8 @@ ViewSchema applyInputOverlay(ViewSchema view, InputOverlay overlay) {
     icon: overlay.icon,
     postLog: overlay.postLog,
     groups: overlay.groups,
+    topMetric: overlay.topMetric,
+    hasInputOverlay: true,
+    repeatGroup: overlay.repeatGroup,
   );
 }

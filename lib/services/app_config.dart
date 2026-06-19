@@ -23,11 +23,20 @@ class AppConfig {
   /// stay inert.
   final GithubConfig? github;
 
+  /// When non-null, the app boots straight into the timeline for the view
+  /// matching this name — skipping the home screen and most chrome (chat,
+  /// sync, reload). For single-purpose client-facing builds (Poke House
+  /// inventory on a fleet of iPads) where employees only ever log into
+  /// one view and shouldn't see the rest of the surface. Set via
+  /// `kiosk_view: <view_name>` in the repo `config.yml`.
+  final String? kioskView;
+
   AppConfig({
     required this.spreadsheetId,
     required this.models,
     this.disablePostLog = false,
     this.github,
+    this.kioskView,
   });
 
   static Future<AppConfig> load() async {
@@ -59,6 +68,7 @@ class AppConfig {
       github: node['github'] is YamlMap
           ? GithubConfig.fromYaml(_yamlMapToJson(node['github'] as YamlMap))
           : null,
+      kioskView: node['kiosk_view'] as String?,
     );
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -16,8 +17,16 @@ class GithubClient {
   final GithubConfig config;
   final http.Client _http;
 
+  /// Wraps the supplied client in a 30s per-request timeout. Without
+  /// this, a stuck GitHub API call (DNS hiccup, network partition,
+  /// rate-limit hold) would leave the chat tool spinning forever — the
+  /// "open a PR" flow has hung once for the user in exactly this shape.
+  /// 30s is well above GitHub's documented SLO for write endpoints.
   GithubClient(this.config, {http.Client? httpClient})
-      : _http = httpClient ?? http.Client();
+      : _http = _TimeoutClient(
+          httpClient ?? http.Client(),
+          const Duration(seconds: 30),
+        );
 
   Map<String, String> get _headers => {
         'Authorization': 'Bearer ${config.token}',
@@ -125,6 +134,35 @@ class GithubClient {
     return commit['sha'] as String;
   }
 
+  /// Deletes [path] on [branch]. Requires [sha] (the blob's current SHA
+  /// — fetch via [readFile] first). Returns the new commit SHA.
+  Future<String> deleteFile({
+    required String path,
+    required String branch,
+    required String message,
+    required String sha,
+  }) async {
+    final url = _api(
+      '/repos/${config.owner}/${config.repo}/contents/$path',
+    );
+    final body = <String, dynamic>{
+      'message': message,
+      'branch': branch,
+      'sha': sha,
+    };
+    // http.Client.delete doesn't take a body on most platforms — use
+    // send with a Request to deliver the JSON body alongside the verb.
+    final req = http.Request('DELETE', url)
+      ..headers.addAll(_headers)
+      ..body = jsonEncode(body);
+    final streamed = await _http.send(req);
+    final resp = await http.Response.fromStream(streamed);
+    _check(resp, 'delete $path');
+    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
+    final commit = decoded['commit'] as Map<String, dynamic>;
+    return commit['sha'] as String;
+  }
+
   /// Opens a PR from [head] into [base] with the given title + body.
   /// Returns (number, htmlUrl).
   Future<({int number, String htmlUrl})> openPullRequest({
@@ -177,4 +215,31 @@ class GithubException implements Exception {
 
   @override
   String toString() => 'GitHub $op failed ($status): $message';
+}
+
+/// Applies a per-request timeout to every call routed through the wrapped
+/// client. On expiry, throws `http.ClientException` with a clear "timed
+/// out" message rather than letting the future hang forever — the chat's
+/// tool-use loop catches it and surfaces a usable error.
+class _TimeoutClient extends http.BaseClient {
+  final http.Client _inner;
+  final Duration timeout;
+
+  _TimeoutClient(this._inner, this.timeout);
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    try {
+      return await _inner.send(request).timeout(timeout);
+    } on TimeoutException {
+      throw http.ClientException(
+        'Timed out after ${timeout.inSeconds}s: '
+        '${request.method} ${request.url.path}',
+        request.url,
+      );
+    }
+  }
+
+  @override
+  void close() => _inner.close();
 }

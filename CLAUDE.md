@@ -306,4 +306,6 @@ Always gate destructive scripts behind `--confirm`.
 - **Oxy / airlayer compatibility principle:** `./docs/oxy-compatibility.md`
   — how ledger shares `config.yml` with oxy and airlayer (YAML contract,
   not code dependency).
+- **`.view.yml` ↔ `.input.yml` pairing:** `./docs/view-input-pairing.md`
+  — what goes where, how the two files merge, and the validation rules.
 - Memory entries for this project: `~/.claude/projects/-Users-robertyi-repos-ledger/memory/MEMORY.md`

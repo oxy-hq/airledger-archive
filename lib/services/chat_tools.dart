@@ -569,23 +569,58 @@ class ChatToolset {
     return ChatTool(
       name: 'propose_change',
       description:
-          'Creates a branch, commits a single-file change, and opens a '
-          'PR against the default branch. Use this when the user agrees '
-          'to a change you proposed — never auto-apply without their '
-          'OK. Returns the PR URL on success.',
+          'Creates a branch, applies one or more file operations '
+          '(update, create, or delete), and opens a PR against the '
+          'default branch. Use when the user agrees to a change you '
+          'proposed — never auto-apply without their OK. Returns the '
+          'PR URL on success.\n\n'
+          'Two input shapes are accepted:\n'
+          '1. Single-file (backward-compat): provide `path` + '
+          '`new_content` for an update.\n'
+          '2. Multi-op (preferred): provide an `operations` array. Each '
+          'entry has `action` ("update" | "create" | "delete") and '
+          '`path`; update/create also need `content`. Delete needs no '
+          'content. All ops land on one branch in one PR.',
       inputSchema: const {
         'type': 'object',
         'properties': {
+          'operations': {
+            'type': 'array',
+            'description': 'List of file operations to apply on the '
+                'branch in order. Use this for any non-trivial PR '
+                '(deletes, multi-file changes, new files).',
+            'items': {
+              'type': 'object',
+              'properties': {
+                'action': {
+                  'type': 'string',
+                  'enum': ['update', 'create', 'delete'],
+                  'description': '`update` overwrites an existing '
+                      'file; `create` writes a new file (fails if it '
+                      'exists); `delete` removes a file.',
+                },
+                'path': {
+                  'type': 'string',
+                  'description': 'Repo-relative path.',
+                },
+                'content': {
+                  'type': 'string',
+                  'description': 'Complete new file contents for '
+                      'update/create. Omit for delete. Not a diff.',
+                },
+              },
+              'required': ['action', 'path'],
+            },
+          },
           'path': {
             'type': 'string',
-            'description': 'Repo-relative path to write. Must already '
-                'exist (we update existing files; creating new ones is '
-                'not yet supported).',
+            'description': 'Single-file shortcut: path to update. '
+                'Equivalent to operations=[{action:update,path,...}].',
           },
           'new_content': {
             'type': 'string',
-            'description': 'Complete new file contents — not a diff. '
-                'Preserve everything the user did not ask to change.',
+            'description': 'Single-file shortcut: complete new contents '
+                'for the path above.',
           },
           'title': {
             'type': 'string',
@@ -598,43 +633,136 @@ class ChatToolset {
                 'sentences. The user will read this before merging.',
           },
         },
-        'required': ['path', 'new_content', 'title'],
+        'required': ['title'],
       },
       run: (input) async {
-        final path = (input['path'] as String).trim();
-        final newContent = input['new_content'] as String;
         final title = (input['title'] as String).trim();
         final body = (input['body'] as String?)?.trim();
         final gh = github!;
         final base = gh.config.defaultBranch;
-        // Get the existing file (we need its sha to update it, and we
-        // bail early if it doesn't exist).
-        final existing = await gh.readFile(path);
-        if (existing == null) {
-          return 'Error: file $path does not exist on $base. The '
-              'current propose_change only updates existing files.';
+
+        // Normalize input into a list of typed operations. Two intake
+        // paths: the new `operations` array or the legacy single-file
+        // `path` + `new_content`. We always end up with the same shape
+        // downstream.
+        final ops = <_FileOp>[];
+        final raw = input['operations'];
+        if (raw is List && raw.isNotEmpty) {
+          for (final entry in raw) {
+            if (entry is! Map) {
+              return 'Error: each operations entry must be an object.';
+            }
+            final actionStr = (entry['action'] as String?)?.trim();
+            final path = (entry['path'] as String?)?.trim();
+            if (actionStr == null || path == null || path.isEmpty) {
+              return 'Error: each operations entry needs `action` and '
+                  '`path`.';
+            }
+            final action = _FileOpAction.values
+                .where((a) => a.name == actionStr)
+                .firstOrNull;
+            if (action == null) {
+              return 'Error: unknown action "$actionStr" — must be '
+                  'update, create, or delete.';
+            }
+            final content = entry['content'] as String?;
+            if ((action == _FileOpAction.update ||
+                    action == _FileOpAction.create) &&
+                (content == null)) {
+              return 'Error: action $actionStr on $path requires '
+                  '`content`.';
+            }
+            ops.add(_FileOp(action: action, path: path, content: content));
+          }
+        } else if (input['path'] != null && input['new_content'] != null) {
+          ops.add(_FileOp(
+            action: _FileOpAction.update,
+            path: (input['path'] as String).trim(),
+            content: input['new_content'] as String,
+          ));
+        } else {
+          return 'Error: provide either `operations: [...]` or the '
+              'single-file shortcut (`path` + `new_content`).';
         }
-        // Generate a branch name from the title + a short random suffix
-        // so re-running a similar PR doesn't collide.
+
+        // Pre-flight: fetch the current sha for every update/delete
+        // (PUT/DELETE require the previous blob's sha). For create,
+        // ensure no file exists there yet so we fail loudly instead of
+        // silently overwriting.
+        for (final op in ops) {
+          final existing = await gh.readFile(op.path);
+          switch (op.action) {
+            case _FileOpAction.update:
+              if (existing == null) {
+                return 'Error: ${op.path} does not exist on $base — '
+                    'cannot update. Use action: create instead.';
+              }
+              op.sha = existing.sha;
+              break;
+            case _FileOpAction.delete:
+              if (existing == null) {
+                return 'Error: ${op.path} does not exist on $base — '
+                    'nothing to delete.';
+              }
+              op.sha = existing.sha;
+              break;
+            case _FileOpAction.create:
+              if (existing != null) {
+                return 'Error: ${op.path} already exists on $base — '
+                    'use action: update instead.';
+              }
+              break;
+          }
+        }
+
+        // Branch off the default tip.
         final slug = _slugify(title);
         final suffix = _randomSuffix();
         final branch = 'airledger/$slug-$suffix';
         final baseSha = await gh.branchHeadSha(base);
         await gh.createBranch(branch, baseSha);
-        await gh.putFile(
-          path: path,
-          content: newContent,
-          branch: branch,
-          message: title,
-          sha: existing.sha,
-        );
+
+        // Apply each op sequentially. Each call mutates the branch
+        // head so subsequent ops see the new state. Failure inside the
+        // loop leaves a half-applied branch — surface the partial state
+        // so the user can clean up rather than silently dropping work.
+        try {
+          for (final op in ops) {
+            switch (op.action) {
+              case _FileOpAction.update:
+              case _FileOpAction.create:
+                await gh.putFile(
+                  path: op.path,
+                  content: op.content!,
+                  branch: branch,
+                  message: title,
+                  sha: op.sha,
+                );
+                break;
+              case _FileOpAction.delete:
+                await gh.deleteFile(
+                  path: op.path,
+                  branch: branch,
+                  message: title,
+                  sha: op.sha!,
+                );
+                break;
+            }
+          }
+        } catch (e) {
+          return 'Error: branch $branch created but a file op failed '
+              'midway: $e. Open the branch on GitHub to inspect / clean up.';
+        }
+
         final pr = await gh.openPullRequest(
           head: branch,
           base: base,
           title: title,
           body: body,
         );
-        return 'PR opened: #${pr.number} ${pr.htmlUrl}';
+        return 'PR opened: #${pr.number} ${pr.htmlUrl}\n'
+            'Branch: $branch\n'
+            'Ops applied: ${ops.length}';
       },
     );
   }
@@ -696,4 +824,18 @@ class ChatToolset {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
     return List.generate(6, (_) => chars[r.nextInt(chars.length)]).join();
   }
+}
+
+enum _FileOpAction { update, create, delete }
+
+class _FileOp {
+  final _FileOpAction action;
+  final String path;
+  final String? content;
+
+  /// Filled during pre-flight from `readFile(path).sha` for update/delete.
+  /// Null for create.
+  String? sha;
+
+  _FileOp({required this.action, required this.path, this.content});
 }

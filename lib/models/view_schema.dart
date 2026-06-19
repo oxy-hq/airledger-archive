@@ -10,11 +10,29 @@ library;
 
 enum DimensionType { string, number, date, datetime, boolean }
 
-enum WidgetType { text, longtext, number, date, datetime, dropdown, autocomplete }
+enum WidgetType {
+  text,
+  longtext,
+  number,
+  date,
+  datetime,
+  dropdown,
+  autocomplete,
+  /// Stopwatch input. Renders the field as a time-of-day text input with
+  /// a Start button; once tapped, shows live elapsed time + one button
+  /// per ladder. Each ladder button stamps `m:ss` (or `H:MM:SS` if past
+  /// an hour) elapsed-since-Start into the named target field. Designed
+  /// for interval logging (cardio Z4/Z5 reaches, climbing send times).
+  timer,
+}
 
 enum EntityType { primary, foreign }
 
-enum MeasureType { count, sum, average, max, min, countDistinct }
+/// Mirrors airlayer's measure types. `custom` and `number` are
+/// "passthrough" — the `expr` is emitted verbatim into SQL with no
+/// aggregation wrapper, so the schema author can write things like
+/// `STDDEV_SAMP(weight_lbs)` or a constant.
+enum MeasureType { count, sum, average, max, min, countDistinct, custom, number }
 
 /// Format used by the `derive:` block to compute a hidden field at save time.
 enum DeriveFormat { weekdayLong, weekdayShort, isoDate, isoDateTime }
@@ -55,6 +73,30 @@ class ViewSchema {
   /// duplicating it on every show_when. Empty when no groups: declared.
   final Map<String, Set<String>> groups;
 
+  /// Optional name of a measure on this view used to score rows for the
+  /// history panel's per-day "top" highlight. The measure's `expr` is
+  /// evaluated per row (via Jinja) — the row with the largest score on
+  /// each day gets highlighted. Lets the schema author say "top set is
+  /// max e1rm" instead of falling back to noisy "max of any numeric
+  /// dimension." Null disables the highlight.
+  final String? topMetric;
+
+  /// True when this view has a paired `.input.yml` overlay (i.e. it's a
+  /// data-entry tracker). False when the view is analytics-only — its
+  /// dimensions and measures are intended for airlayer queries
+  /// (e.g. virtual dimensions with SQL exprs like `CAST(date AS DATE)`,
+  /// custom measures like `STDDEV_SAMP(...)`) and it should NOT appear
+  /// as a tappable tracker on the home screen or be passed to
+  /// `ensureTable` (which would try to write the SQL exprs as sheet
+  /// headers).
+  final bool hasInputOverlay;
+
+  /// Optional declaration that a subset of fields repeats together. The
+  /// form renders a "+ Add <label>" button; on save the repeating fields
+  /// fan out into N rows (one per block) that share every other field.
+  /// See [RepeatGroup].
+  final RepeatGroup? repeatGroup;
+
   ViewSchema({
     required this.name,
     this.description,
@@ -70,6 +112,9 @@ class ViewSchema {
     this.icon,
     this.postLog,
     this.groups = const {},
+    this.topMetric,
+    this.hasInputOverlay = false,
+    this.repeatGroup,
   });
 
   Dimension? dimensionByName(String name) =>
@@ -234,6 +279,28 @@ class InputSpec {
   /// Useful for "Start Time"-style columns.
   final bool nowButton;
 
+  /// If true, the field renders a history-icon suffix button that opens a
+  /// bottom sheet listing all past records sharing the field's current
+  /// value. Useful for dimensions whose value identifies a recurring
+  /// entity (an exercise, a meal, a route) where users want to see how
+  /// they've logged it before.
+  final bool history;
+
+  /// For `widget: timer` fields. Each entry adds a "tap when reached"
+  /// button below the timer that writes elapsed time into the named
+  /// [TimerLadder.target] dim. Ignored for non-timer widgets.
+  final List<TimerLadder>? ladders;
+
+  /// For `widget: timer` fields. Each entry is a dim the Stop button
+  /// writes into when tapped, with a [TimerStopFormat] controlling how
+  /// the value is encoded — elapsed `m:ss` string, raw seconds as a
+  /// number, or the current time-of-day. Multiple entries let one timer
+  /// fan out (e.g. write `duration: 90` AND `end_time: "10:42:00 AM"`
+  /// in the same Stop tap; show_when then drops whichever doesn't
+  /// apply for the selected exercise at save). Empty = Stop just
+  /// freezes the display.
+  final List<TimerStopTarget>? stopTargets;
+
   InputSpec({
     required this.widget,
     this.required = false,
@@ -244,7 +311,37 @@ class InputSpec {
     this.placeholder,
     this.editable = true,
     this.nowButton = false,
+    this.history = false,
+    this.ladders,
+    this.stopTargets,
   });
+}
+
+/// Encoding for a timer's Stop value.
+///   - `elapsed` (default): `m:ss` or `H:MM:SS` string, the same shape
+///     ladder chips emit. Use for fields like `total_time`.
+///   - `seconds`: total elapsed as an integer number (seconds). Use for
+///     numeric fields like `duration`.
+///   - `timeOfDay`: current wall-clock time as `h:mm:ss a` string. Use
+///     for fields like `end_time` where you want the moment of stop,
+///     not a duration.
+enum TimerStopFormat { elapsed, seconds, timeOfDay }
+
+class TimerStopTarget {
+  final String target;
+  final TimerStopFormat format;
+
+  const TimerStopTarget({required this.target, required this.format});
+}
+
+/// One step in a [WidgetType.timer]'s ladder. Tapping the rendered button
+/// stamps elapsed-time-since-start into [target] (a dim name on the
+/// same view).
+class TimerLadder {
+  final String label;
+  final String target;
+
+  const TimerLadder({required this.label, required this.target});
 }
 
 /// A small derived-field spec: take the value of dimension [from], pass it
@@ -300,6 +397,54 @@ class Plannable {
 ///     Briefly comment on this {{ view.name }} entry:
 ///     {{ row }}
 /// ```
+/// Declares that a subset of a view's fields repeats together within a
+/// single form session. The form renders the non-repeating fields once,
+/// then N blocks of the repeating fields (each block being one "row" the
+/// user is logging), with a "+ Add <label>" button to spawn another
+/// block. On save the form fans out into N records, each sharing every
+/// non-repeating field.
+///
+/// For sauces: shared = (date, sauce, batch_qty, batch_unit, notes);
+/// repeating = (ingredient, ingredient_qty, ingredient_unit). One batch
+/// with three ingredients writes three rows.
+///
+/// Schema example:
+/// ```yaml
+/// repeat_group:
+///   fields: [ingredient, ingredient_qty, ingredient_unit]
+///   label: Ingredient
+///   min: 1
+/// ```
+class RepeatGroup {
+  /// Names of the dimensions that repeat together. Each named dim must
+  /// exist as an editable field on the view.
+  final List<String> fields;
+
+  /// Singular noun for the "+ Add X" button and per-block header.
+  /// (e.g. "Ingredient" → "+ Add Ingredient", "Ingredient #1").
+  final String label;
+
+  /// Minimum block count. Below this the delete (×) on a block hides so
+  /// the user can't drop below it. Default 1.
+  final int min;
+
+  /// Optional dimension name that holds the batch UUID — the value
+  /// shared across all rows in one save. When set, the form generates
+  /// one UUID at save time and stamps it into this field on every fan-
+  /// out row. The timeline groups rows by this field so the batch
+  /// renders as a single tile, and edit/delete operate on the whole
+  /// batch (all rows sharing the same value). Required for the
+  /// "batch-as-entity" UX; without it, rows live independently.
+  final String? groupKey;
+
+  RepeatGroup({
+    required this.fields,
+    required this.label,
+    this.min = 1,
+    this.groupKey,
+  });
+}
+
 class PostLogHook {
   /// Model name from `config.yml` `models:`.
   final String model;

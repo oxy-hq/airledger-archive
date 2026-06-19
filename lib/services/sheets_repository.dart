@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:googleapis/sheets/v4.dart' as sheets;
 import 'package:googleapis_auth/auth_io.dart';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/database_config.dart';
@@ -24,6 +25,32 @@ typedef Record = Map<String, Object?>;
 /// the sheet, so [SheetsRepository.update] can identify them even when id
 /// is missing. Public so callers can bump indexes after an insert-at-top.
 const rowIndexKey = '__row';
+
+/// Parses a time-of-day string into a duration-since-midnight, so sort
+/// comparators can order rows chronologically rather than lexically.
+/// Recognized formats: 12-hour `h:mm:ss a` / `h:mm a` (with the AM/PM
+/// suffix used by `now_button`'s `DateFormat('h:mm:ss a')`) and
+/// 24-hour `H:mm:ss` / `H:mm` for sheets the user edited by hand.
+/// Returns null for inputs that don't match either family — callers
+/// fall back to string compare in that case.
+Duration? _parseTime(String s) {
+  for (final fmt in const [
+    'h:mm:ss a',
+    'h:mm a',
+    'H:mm:ss',
+    'H:mm',
+  ]) {
+    try {
+      final dt = DateFormat(fmt).parseLoose(s);
+      return Duration(
+        hours: dt.hour,
+        minutes: dt.minute,
+        seconds: dt.second,
+      );
+    } catch (_) {/* try next */}
+  }
+  return null;
+}
 
 /// CRUD over Google Sheets — one implementation of [WarehouseConnector].
 /// Each [ViewSchema] picks a spreadsheet (its own `spreadsheet_id` override
@@ -156,8 +183,9 @@ class SheetsRepository implements WarehouseConnector {
             v.day == onDate.day;
       }).toList();
       // Within a date, sort ascending by the plannable log field (start_time)
-      // so the first set of the day appears first. Fall back to sheet row
-      // order if the view has no plannable.
+      // so the first set of the day appears first. We parse as a real
+      // time-of-day before comparing — naive string compare puts
+      // "10:42:00 AM" before "9:23:00 AM" because "1" < "9" lexically.
       final logField = view.plannable?.logField;
       filtered.sort((a, b) {
         if (logField != null) {
@@ -166,6 +194,9 @@ class SheetsRepository implements WarehouseConnector {
           if (av.isEmpty && bv.isEmpty) return 0;
           if (av.isEmpty) return 1; // missing times sort last
           if (bv.isEmpty) return -1;
+          final at = _parseTime(av);
+          final bt = _parseTime(bv);
+          if (at != null && bt != null) return at.compareTo(bt);
           return av.compareTo(bv);
         }
         final ar = a[rowIndexKey] as int? ?? 0;

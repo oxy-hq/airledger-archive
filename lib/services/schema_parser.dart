@@ -135,6 +135,10 @@ MeasureType _parseMeasureType(String s) {
       return MeasureType.min;
     case 'count_distinct':
       return MeasureType.countDistinct;
+    case 'custom':
+      return MeasureType.custom;
+    case 'number':
+      return MeasureType.number;
     default:
       throw FormatException('Unknown measure type: $s');
   }

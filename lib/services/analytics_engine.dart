@@ -103,6 +103,10 @@ class AnalyticsEngine {
         return 'min';
       case MeasureType.countDistinct:
         return 'count_distinct';
+      case MeasureType.custom:
+        return 'custom';
+      case MeasureType.number:
+        return 'number';
     }
   }
 

@@ -61,7 +61,12 @@ class _HomeScreenState extends State<HomeScreen> {
       configs: const [],
       bundledSheets: repo,
     );
-    for (final view in views) {
+    // Skip analytics-only views (no .input.yml). Their dimensions are
+    // SQL expressions (e.g. `CAST(date AS DATE)`), so passing them to
+    // `ensureTable` would try to write those exprs as sheet column
+    // headers — corrupts the underlying sheet and surfaces as a
+    // "bad state: can't finalize a finalized request" mid-startup.
+    for (final view in views.where((v) => v.hasInputOverlay)) {
       await registry.forView(view).ensureTable(view);
     }
     // disable_post_log in config.yml gates every piece of the LLM plumbing.
@@ -93,6 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
       models: assetConfig.models,
       github: assetConfig.github,
       analytics: analytics,
+      kioskView: assetConfig.kioskView,
     );
   }
 
@@ -151,6 +157,33 @@ class _HomeScreenState extends State<HomeScreen> {
         final github = boot?.github;
         final chatModel =
             boot == null ? null : _chatModel(boot.models);
+        // Kiosk short-circuit: when config.yml declares `kiosk_view:` and a
+        // view by that name exists, the home screen never renders — the app
+        // boots directly into the timeline for that view with all
+        // admin/dev chrome (chat, sync, reload, back, view picker) hidden.
+        // Built for fleet deploys (Poke House on iPads) where non-technical
+        // employees should never see anything but the one tracker.
+        if (boot != null && boot.kioskView != null) {
+          ViewSchema? kioskView;
+          for (final v in boot.views) {
+            if (v.name == boot.kioskView) {
+              kioskView = v;
+              break;
+            }
+          }
+          if (kioskView != null) {
+            return TimelineScreen(
+              view: kioskView,
+              repository: boot.repository,
+              llm: boot.llm,
+              llmCache: boot.llmCache,
+              chatModel: null,
+              github: null,
+              analytics: boot.analytics,
+              kioskMode: true,
+            );
+          }
+        }
         return Scaffold(
           appBar: AppBar(
             title: Text(appName),
@@ -192,22 +225,27 @@ class _HomeScreenState extends State<HomeScreen> {
                 return _ErrorView(error: snap.error.toString());
               }
               final data = snap.data!;
-              if (data.views.isEmpty) {
+              // Only show data-entry trackers (paired with .input.yml).
+              // Analytics-only views still live in data.views for the
+              // chat / apps screen to query.
+              final entryViews =
+                  data.views.where((v) => v.hasInputOverlay).toList();
+              if (entryViews.isEmpty) {
                 return const Center(child: Text('No views available.'));
               }
               return Column(
                 children: [
                   TodayDashboard(
-                    views: data.views,
+                    views: entryViews,
                     registry: data.registry,
                     repository: data.repository,
                   ),
                   Expanded(
                     child: ListView.separated(
-                      itemCount: data.views.length + 1,
+                      itemCount: entryViews.length + 1,
                       separatorBuilder: (_, _) => const Divider(height: 1),
                       itemBuilder: (_, i) {
-                        if (i == data.views.length) {
+                        if (i == entryViews.length) {
                           return ListTile(
                             leading: const Icon(Icons.bar_chart),
                             title: const Text('Apps'),
@@ -224,7 +262,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           );
                         }
-                        final view = data.views[i];
+                        final view = entryViews[i];
                         return ListTile(
                           leading: IconResolver.resolve(
                             view.icon,
@@ -290,6 +328,11 @@ class _Bootstrap {
   /// Null when the native lib can't load on this platform.
   final AnalyticsEngine? analytics;
 
+  /// When non-null, the home screen short-circuits to a TimelineScreen
+  /// for the matching view and hides app-bar chrome. See
+  /// [AppConfig.kioskView].
+  final String? kioskView;
+
   _Bootstrap({
     required this.views,
     required this.repository,
@@ -300,6 +343,7 @@ class _Bootstrap {
     required this.models,
     required this.github,
     required this.analytics,
+    this.kioskView,
   });
 }
 
