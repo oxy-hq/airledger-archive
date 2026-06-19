@@ -1,8 +1,21 @@
+import 'package:airledger_engine/airledger_engine.dart';
 import 'package:flutter/material.dart';
 
 import 'ui/home_screen.dart';
 
 void main() {
+  // Phase 6a smoke proof: load the Rust engine on startup and print its
+  // version. If this surfaces in logcat under the `flutter:` tag, the
+  // FFI is wired correctly; if it throws, jniLibs / pubspec / loader
+  // are mis-configured.
+  try {
+    final engine = AirledgerEngine.load();
+    // ignore: avoid_print
+    print('[airledger.engine] loaded: ${engine.version}');
+  } catch (e, st) {
+    // ignore: avoid_print
+    print('[airledger.engine] load failed: $e\n$st');
+  }
   runApp(const LedgerApp());
 }
 

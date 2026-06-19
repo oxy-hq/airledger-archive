@@ -16,6 +16,13 @@ packages:
       relative: true
     source: path
     version: "0.1.0"
+  airledger_engine:
+    dependency: "direct main"
+    description:
+      path: "../airledger/sdk-dart"
+      relative: true
+    source: path
+    version: "0.0.1"
   archive:
     dependency: transitive
     description:
