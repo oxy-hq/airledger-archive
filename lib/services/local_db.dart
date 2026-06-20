@@ -4,7 +4,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../models/view_schema.dart';
 import 'cell_codec.dart';
-import 'sheets_repository.dart';
+import 'warehouse_connector.dart';
 
 /// Local SQLite mirror of the Sheets data, used as the analytics substrate.
 ///
@@ -36,7 +36,7 @@ class LocalDb {
   /// Pulls every row of [view] from the sheet via [repo] and replaces the
   /// matching SQLite table. Safe to call repeatedly; runs as a single
   /// transaction so partial failures don't leave a half-populated cache.
-  Future<int> syncFromSheet(ViewSchema view, SheetsRepository repo) async {
+  Future<int> syncFromSheet(ViewSchema view, WarehouseConnector repo) async {
     final rows = await repo.list(view);
     final table = view.table;
     final columns = view.dimensions

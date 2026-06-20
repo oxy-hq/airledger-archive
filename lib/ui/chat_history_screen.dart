@@ -6,7 +6,7 @@ import '../models/model_config.dart';
 import '../services/analytics_engine.dart';
 import '../services/chat_store.dart';
 import '../services/github_client.dart';
-import '../services/sheets_repository.dart';
+import '../services/warehouse_connector.dart';
 import 'chat_screen.dart';
 
 /// Lists past chat sessions newest-first. Tap to resume; swipe-left to
@@ -16,7 +16,7 @@ import 'chat_screen.dart';
 class ChatHistoryScreen extends StatefulWidget {
   final ModelConfig model;
   final GithubConfig? github;
-  final SheetsRepository? repository;
+  final WarehouseConnector? repository;
   final AnalyticsEngine? analytics;
 
   const ChatHistoryScreen({

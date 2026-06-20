@@ -9,8 +9,8 @@ import 'analytics_engine.dart';
 import 'chat_runner.dart';
 import 'github_client.dart';
 import 'plan_store.dart';
-import 'sheets_repository.dart';
 import 'template_interpolator.dart';
+import 'warehouse_connector.dart';
 import 'template_loader.dart';
 
 /// Builds the set of tools the chat LLM can call. Each tool is small,
@@ -30,7 +30,7 @@ import 'template_loader.dart';
 class ChatToolset {
   final GithubClient? github;
   final ViewSchema? view;
-  final SheetsRepository? repository;
+  final WarehouseConnector? repository;
 
   /// AnalyticsEngine (airlayer + LocalDb). When non-null and a view is
   /// in scope, the chat can call run_query to ask history questions —

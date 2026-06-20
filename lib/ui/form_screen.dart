@@ -5,6 +5,7 @@ import '../models/view_schema.dart';
 import '../services/autocomplete_cache.dart';
 import '../services/derive.dart';
 import '../services/sheets_repository.dart';
+import '../services/warehouse_connector.dart';
 import 'widgets/field_widgets.dart';
 import 'widgets/history_panel.dart';
 
@@ -25,7 +26,7 @@ import 'widgets/history_panel.dart';
 ///     (safer than the reverse order — never an empty intermediate state).
 class FormScreen extends StatefulWidget {
   final ViewSchema view;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
 
   /// Single-row edit target. Mutually exclusive with [batch].
   final Record? existing;

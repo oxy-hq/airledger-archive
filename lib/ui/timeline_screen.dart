@@ -20,6 +20,7 @@ import '../services/llm_response_cache.dart';
 import '../services/log_now.dart';
 import '../services/plan_store.dart';
 import '../services/sheets_repository.dart';
+import '../services/warehouse_connector.dart';
 import 'chat_screen.dart';
 import 'form_screen.dart';
 import 'templates_screen.dart';
@@ -92,7 +93,7 @@ class _Item {
 /// Planned rows appear at the top so they're easy to act on during a workout.
 class TimelineScreen extends StatefulWidget {
   final ViewSchema view;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
   final LlmClient? llm;
   final LlmResponseCache? llmCache;
 
@@ -1523,7 +1524,7 @@ class _RecordTile extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onLogNow;
   final LlmResponseCache? llmCache;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
 
   const _RecordTile({
     required this.view,
@@ -1724,7 +1725,7 @@ class _CompletedSection extends StatelessWidget {
   final Set<String> selectedKeys;
   final Set<String> expandedKeys;
   final bool selectionMode;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
   final void Function(_Item) onTap;
   final void Function(_Item) onEdit;
   final void Function(_Item) onMove;

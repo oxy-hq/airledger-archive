@@ -27,6 +27,169 @@ ViewSchema parseViewPairViaEngine(
   return viewSchemaFromEngineJson(json);
 }
 
+/// Inverse of [`viewSchemaFromEngineJson`]: serialize a Dart
+/// [`ViewSchema`] back into the JSON shape the engine accepts (e.g.
+/// for the sheets FFI ops). Snake_case keys, Rust-side enum spellings
+/// (`iso_date_time` rather than `iso_datetime` for `LogFormat`).
+Map<String, dynamic> viewSchemaToEngineJson(ViewSchema view) {
+  return {
+    'name': view.name,
+    if (view.description != null) 'description': view.description,
+    'datasource': view.datasource,
+    'table': view.table,
+    if (view.dateField != null) 'date_field': view.dateField,
+    if (view.spreadsheetId != null) 'spreadsheet_id': view.spreadsheetId,
+    if (view.entities.isNotEmpty)
+      'entities': view.entities.map(_entityToJson).toList(),
+    'dimensions': view.dimensions.map(_dimensionToJson).toList(),
+    if (view.measures.isNotEmpty)
+      'measures': view.measures.map(_measureToJson).toList(),
+    if (view.listDisplay != null) 'list_display': _listDisplayToJson(view.listDisplay!),
+    if (view.plannable != null) 'plannable': _plannableToJson(view.plannable!),
+    if (view.icon != null) 'icon': view.icon,
+    if (view.postLog != null) 'post_log': _postLogToJson(view.postLog!),
+    if (view.groups.isNotEmpty)
+      'groups': {
+        for (final entry in view.groups.entries)
+          entry.key: entry.value.toList(),
+      },
+    if (view.topMetric != null) 'top_metric': view.topMetric,
+    'has_input_overlay': view.hasInputOverlay,
+    if (view.repeatGroup != null) 'repeat_group': _repeatGroupToJson(view.repeatGroup!),
+  };
+}
+
+Map<String, dynamic> _entityToJson(Entity e) => {
+      'name': e.name,
+      'type': _entityTypeToJson(e.type),
+      if (e.keys.isNotEmpty) 'keys': e.keys,
+    };
+
+String _entityTypeToJson(EntityType t) => switch (t) {
+      EntityType.primary => 'primary',
+      EntityType.foreign => 'foreign',
+    };
+
+Map<String, dynamic> _dimensionToJson(Dimension d) => {
+      'name': d.name,
+      'type': _dimensionTypeToJson(d.type),
+      'expr': d.expr,
+      if (d.description != null) 'description': d.description,
+      if (d.samples != null) 'samples': d.samples,
+      if (d.input != null) 'input': _inputSpecToJson(d.input!),
+      if (d.derive != null) 'derive': _deriveToJson(d.derive!),
+      if (d.showWhen != null) 'show_when': d.showWhen,
+    };
+
+String _dimensionTypeToJson(DimensionType t) => switch (t) {
+      DimensionType.string => 'string',
+      DimensionType.number => 'number',
+      DimensionType.date => 'date',
+      DimensionType.datetime => 'datetime',
+      DimensionType.boolean => 'boolean',
+    };
+
+Map<String, dynamic> _inputSpecToJson(InputSpec s) => {
+      'widget': _widgetToJson(s.widget),
+      'required': s.required,
+      if (s.defaultValue != null) 'default': s.defaultValue,
+      if (s.min != null) 'min': s.min,
+      if (s.max != null) 'max': s.max,
+      if (s.options != null) 'options': s.options,
+      if (s.placeholder != null) 'placeholder': s.placeholder,
+      'editable': s.editable,
+      'now_button': s.nowButton,
+      'history': s.history,
+      if (s.ladders != null)
+        'ladders': s.ladders!
+            .map((l) => {'label': l.label, 'target': l.target})
+            .toList(),
+      if (s.stopTargets != null)
+        'stop_targets': s.stopTargets!
+            .map((t) => {
+                  'target': t.target,
+                  'format': _stopFormatToJson(t.format),
+                })
+            .toList(),
+    };
+
+String _widgetToJson(WidgetType w) => switch (w) {
+      WidgetType.text => 'text',
+      WidgetType.longtext => 'longtext',
+      WidgetType.number => 'number',
+      WidgetType.date => 'date',
+      WidgetType.datetime => 'datetime',
+      WidgetType.dropdown => 'dropdown',
+      WidgetType.autocomplete => 'autocomplete',
+      WidgetType.timer => 'timer',
+    };
+
+String _stopFormatToJson(TimerStopFormat f) => switch (f) {
+      TimerStopFormat.elapsed => 'elapsed',
+      TimerStopFormat.seconds => 'seconds',
+      TimerStopFormat.timeOfDay => 'time_of_day',
+    };
+
+Map<String, dynamic> _deriveToJson(Derive d) => {
+      'from': d.from,
+      'format': _deriveFormatToJson(d.format),
+    };
+
+// Rust LogFormat / DeriveFormat use snake_case via serde, so
+// `IsoDateTime` round-trips as `iso_date_time`, not `iso_datetime`.
+String _deriveFormatToJson(DeriveFormat f) => switch (f) {
+      DeriveFormat.weekdayLong => 'weekday_long',
+      DeriveFormat.weekdayShort => 'weekday_short',
+      DeriveFormat.isoDate => 'iso_date',
+      DeriveFormat.isoDateTime => 'iso_date_time',
+    };
+
+Map<String, dynamic> _measureToJson(Measure m) => {
+      'name': m.name,
+      'type': _measureTypeToJson(m.type),
+      if (m.expr != null) 'expr': m.expr,
+      if (m.description != null) 'description': m.description,
+    };
+
+String _measureTypeToJson(MeasureType t) => switch (t) {
+      MeasureType.count => 'count',
+      MeasureType.sum => 'sum',
+      MeasureType.average => 'average',
+      MeasureType.max => 'max',
+      MeasureType.min => 'min',
+      MeasureType.countDistinct => 'count_distinct',
+      MeasureType.custom => 'custom',
+      MeasureType.number => 'number',
+    };
+
+Map<String, dynamic> _listDisplayToJson(ListDisplay l) => {
+      'title': l.title,
+      if (l.subtitle != null) 'subtitle': l.subtitle,
+    };
+
+Map<String, dynamic> _plannableToJson(Plannable p) => {
+      'log_field': p.logField,
+      'log_format': _logFormatToJson(p.logFormat),
+    };
+
+String _logFormatToJson(LogFormat f) => switch (f) {
+      LogFormat.timeString => 'time_string',
+      LogFormat.isoTime => 'iso_time',
+      LogFormat.isoDateTime => 'iso_date_time',
+    };
+
+Map<String, dynamic> _postLogToJson(PostLogHook h) => {
+      'model': h.model,
+      'prompt': h.prompt,
+    };
+
+Map<String, dynamic> _repeatGroupToJson(RepeatGroup r) => {
+      'fields': r.fields,
+      'label': r.label,
+      'min': r.min,
+      if (r.groupKey != null) 'group_key': r.groupKey,
+    };
+
 /// Convert the engine's merged-view JSON into a Dart [`ViewSchema`].
 /// Public so callers can run their own diff vs. the pure-Dart parser
 /// for parity checks during the cutover.

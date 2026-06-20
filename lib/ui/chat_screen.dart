@@ -13,7 +13,7 @@ import '../services/chat_store.dart';
 import '../services/chat_tools.dart';
 import '../services/github_client.dart';
 import '../services/llm_client.dart';
-import '../services/sheets_repository.dart';
+import '../services/warehouse_connector.dart';
 import 'chat_history_screen.dart';
 
 /// In-app AI assistant. Tool-using LLM that can read the current screen's
@@ -29,7 +29,7 @@ class ChatScreen extends StatefulWidget {
   /// the read_screen_context tool can answer questions about "this
   /// view" without the user having to describe it.
   final ViewSchema? view;
-  final SheetsRepository? repository;
+  final WarehouseConnector? repository;
 
   /// Airlayer + LocalDb. Enables the chat's run_query tool for ad-hoc
   /// aggregates over history (max squat, total volume last week, etc).

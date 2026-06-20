@@ -6,6 +6,7 @@ import 'package:jinja/jinja.dart' hide Template;
 import '../../models/view_schema.dart';
 import '../../services/list_display_render.dart';
 import '../../services/sheets_repository.dart';
+import '../../services/warehouse_connector.dart';
 
 /// Opens a modal bottom sheet listing past records that share [dim]'s
 /// current [value]. Sorted by `view.dateField` descending (newest first)
@@ -20,7 +21,7 @@ Future<void> showHistorySheet({
   required ViewSchema view,
   required Dimension dim,
   required Object? value,
-  required SheetsRepository repository,
+  required WarehouseConnector repository,
 }) async {
   final v = value?.toString().trim();
   if (v == null || v.isEmpty) return;
@@ -41,7 +42,7 @@ class _HistorySheet extends StatefulWidget {
   final ViewSchema view;
   final Dimension dim;
   final String value;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
 
   const _HistorySheet({
     required this.view,

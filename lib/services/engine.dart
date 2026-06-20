@@ -11,8 +11,12 @@ library;
 
 import 'package:airledger_engine/airledger_engine.dart';
 
-/// When true, schema parsing (and eventually sheets ingest) route
-/// through the Rust engine instead of the pure-Dart code in
+import 'engine_sheets_connector.dart';
+import 'sheets_repository.dart';
+import 'warehouse_connector.dart';
+
+/// When true, schema parsing AND sheets ingest route through the
+/// Rust engine instead of the pure-Dart code in
 /// `services/schema_parser.dart`, `services/input_parser.dart`, and
 /// `services/sheets_repository.dart`.
 ///
@@ -26,3 +30,23 @@ AirledgerEngine? _engine;
 /// same instance (the underlying [`DynamicLibrary.open`] is also
 /// process-cached but we keep the wrapper around for the bindings).
 AirledgerEngine getEngine() => _engine ??= AirledgerEngine.load();
+
+/// Build a sheets-backed [`WarehouseConnector`] — engine-routed when
+/// [`useEngine`] is true, pure-Dart [`SheetsRepository`] otherwise.
+/// Both shapes satisfy the same interface, so callers can hold the
+/// result as `WarehouseConnector` and not care which path produced it.
+Future<WarehouseConnector> connectSheetsConnector({
+  required String defaultSpreadsheetId,
+  required String serviceAccountKeyJson,
+}) async {
+  if (useEngine) {
+    return EngineSheetsConnector.connectFromKey(
+      defaultSpreadsheetId: defaultSpreadsheetId,
+      serviceAccountKeyJson: serviceAccountKeyJson,
+    );
+  }
+  return SheetsRepository.connectFromKey(
+    defaultSpreadsheetId: defaultSpreadsheetId,
+    serviceAccountKeyJson: serviceAccountKeyJson,
+  );
+}

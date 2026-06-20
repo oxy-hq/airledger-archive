@@ -8,13 +8,14 @@ import '../models/view_schema.dart';
 import '../services/analytics_engine.dart';
 import '../services/app_config.dart';
 import '../services/connector_registry.dart';
+import '../services/engine.dart';
 import '../services/github_client.dart';
 import '../services/icon_resolver.dart';
 import '../services/llm_client.dart';
 import '../services/llm_response_cache.dart';
 import '../services/schema_loader.dart';
 import '../services/schema_sync.dart';
-import '../services/sheets_repository.dart';
+import '../services/warehouse_connector.dart';
 import 'apps_screen.dart';
 import 'chat_screen.dart';
 import 'timeline_screen.dart';
@@ -53,7 +54,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final views = await SchemaLoader.loadAll();
     final keyJson =
         await rootBundle.loadString('assets/service-account.json');
-    final repo = await SheetsRepository.connectFromKey(
+    final repo = await connectSheetsConnector(
       defaultSpreadsheetId: assetConfig.spreadsheetId,
       serviceAccountKeyJson: keyJson,
     );
@@ -306,7 +307,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class _Bootstrap {
   final List<ViewSchema> views;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
   final ConnectorRegistry registry;
   final LlmClient? llm;
   final LlmResponseCache? llmCache;

@@ -7,6 +7,7 @@ import '../services/pinned_templates.dart';
 import '../services/plan_store.dart';
 import '../services/sheets_repository.dart';
 import '../services/template_interpolator.dart';
+import '../services/warehouse_connector.dart';
 import '../services/template_loader.dart';
 import '../services/template_vars_cache.dart';
 import 'template_vars_dialog.dart';
@@ -16,7 +17,7 @@ import 'template_vars_dialog.dart';
 /// [onDate]. Pinned templates float to the top.
 class TemplatesScreen extends StatefulWidget {
   final ViewSchema view;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
   final DateTime onDate;
 
   const TemplatesScreen({

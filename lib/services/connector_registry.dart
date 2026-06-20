@@ -4,7 +4,6 @@ import 'bigquery_connector.dart';
 import 'clickhouse_connector.dart';
 import 'mysql_connector.dart';
 import 'postgres_connector.dart';
-import 'sheets_repository.dart';
 import 'warehouse_connector.dart';
 
 /// Routes a `.view.yml`'s `datasource:` to a concrete [WarehouseConnector].
@@ -32,7 +31,7 @@ class ConnectorRegistry {
   /// fall through to [UnimplementedConnector].
   static Future<ConnectorRegistry> build({
     required List<DatabaseConfig> configs,
-    SheetsRepository? bundledSheets,
+    WarehouseConnector? bundledSheets,
     String? serviceAccountKeyJson,
   }) async {
     final byName = <String, WarehouseConnector>{};
@@ -71,7 +70,7 @@ class ConnectorRegistry {
 
   static Future<WarehouseConnector> _instantiate(
     DatabaseConfig cfg, {
-    SheetsRepository? bundledSheets,
+    WarehouseConnector? bundledSheets,
     String? serviceAccountKeyJson,
   }) async {
     return switch (cfg) {

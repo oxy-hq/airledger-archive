@@ -5,7 +5,7 @@ import 'package:intl/intl.dart';
 import '../models/view_schema.dart';
 import '../services/connector_registry.dart';
 import '../services/icon_resolver.dart';
-import '../services/sheets_repository.dart';
+import '../services/warehouse_connector.dart';
 import 'timeline_screen.dart';
 
 /// Compact "today" summary band shown at the top of the home screen.
@@ -19,7 +19,7 @@ import 'timeline_screen.dart';
 class TodayDashboard extends StatefulWidget {
   final List<ViewSchema> views;
   final ConnectorRegistry registry;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
 
   const TodayDashboard({
     super.key,
@@ -123,7 +123,7 @@ class _StatPill extends StatelessWidget {
   final ViewSchema view;
   final int? count;
   final bool loading;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
 
   const _StatPill({
     required this.view,

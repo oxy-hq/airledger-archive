@@ -4,7 +4,7 @@ import '../models/app_def.dart';
 import '../models/view_schema.dart';
 import '../services/analytics_engine.dart';
 import '../services/app_loader.dart';
-import '../services/sheets_repository.dart';
+import '../services/warehouse_connector.dart';
 import 'app_viewer_screen.dart';
 
 /// Picker for the bundled .app.yml apps. Initializes the analytics engine
@@ -13,7 +13,7 @@ import 'app_viewer_screen.dart';
 /// per-app viewer.
 class AppsScreen extends StatefulWidget {
   final List<ViewSchema> views;
-  final SheetsRepository repository;
+  final WarehouseConnector repository;
 
   const AppsScreen({super.key, required this.views, required this.repository});
 
