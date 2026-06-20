@@ -50,28 +50,21 @@ class EngineSheetsConnector implements WarehouseConnector {
 
   @override
   Future<void> ensureTable(ViewSchema view) async {
-    _repo.ensureSheet(viewSchemaToEngineJson(view));
+    await _repo.ensureSheet(viewSchemaToEngineJson(view));
   }
 
   @override
   Future<List<Record>> list(ViewSchema view, {DateTime? onDate}) async {
-    final raw = _repo.list(
+    final raw = await _repo.list(
       viewSchemaToEngineJson(view),
       onDate: onDate,
     );
-    return raw.map((r) {
-      final rec = recordFromEngineJson(r);
-      // Engine puts __row in as an int via the tagged envelope; the
-      // codec lifts that to a Dart int automatically. Same key the
-      // pure-Dart SheetsRepository uses, so existing call sites in
-      // form_screen / timeline_screen keep working.
-      return rec;
-    }).toList();
+    return raw.map(recordFromEngineJson).toList();
   }
 
   @override
   Future<Record> create(ViewSchema view, Record record) async {
-    final raw = _repo.create(
+    final raw = await _repo.create(
       viewSchemaToEngineJson(view),
       recordToEngineJson(record),
     );
@@ -80,7 +73,7 @@ class EngineSheetsConnector implements WarehouseConnector {
 
   @override
   Future<void> update(ViewSchema view, Record record) async {
-    _repo.update(
+    await _repo.update(
       viewSchemaToEngineJson(view),
       recordToEngineJson(record),
     );
@@ -88,7 +81,7 @@ class EngineSheetsConnector implements WarehouseConnector {
 
   @override
   Future<void> delete(ViewSchema view, Record record) async {
-    _repo.delete(
+    await _repo.delete(
       viewSchemaToEngineJson(view),
       recordToEngineJson(record),
     );
