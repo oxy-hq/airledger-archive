@@ -20,7 +20,43 @@ class SchemaSync {
   final GithubClient github;
   static const _cacheDirName = 'synced_schemas';
 
+  /// Name of the marker file (inside the cache dir) holding the signature
+  /// of the last successful sync. Not a `.yml`, so the loaders skip it.
+  static const _sigFileName = '.sig';
+
   SchemaSync(this.github);
+
+  /// A cheap fingerprint of the repo's current schema state: the sorted
+  /// list of `<name>:<blob-sha>` for every `.yml` under viewsPath, hashed
+  /// down to one string. GitHub's contents listing returns each file's
+  /// git blob sha (which changes iff its content changes), so this is a
+  /// SINGLE API call — no file bodies downloaded. The poller compares it
+  /// against [cachedSignature] and only does a full [refresh] on a diff.
+  /// Returns null on any network/API error (caller treats as "unknown,
+  /// try again next tick").
+  Future<String?> remoteSignature() async {
+    try {
+      final entries = await github.listDir(github.config.viewsPath);
+      final parts = [
+        for (final e in entries)
+          if (e.type == 'file' && e.path.endsWith('.yml'))
+            '${e.name}:${e.sha ?? ''}',
+      ]..sort();
+      return parts.join('|');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The signature recorded by the last successful [refresh], or null if
+  /// the cache has never been written (or predates signature tracking).
+  static Future<String?> cachedSignature() async {
+    final d = await cacheDir();
+    if (d == null) return null;
+    final f = File(p.join(d.path, _sigFileName));
+    if (!f.existsSync()) return null;
+    return f.readAsStringSync();
+  }
 
   /// Resolves the cache dir path. Public so loaders can read from it.
   /// Returns null if the platform's app docs dir isn't available (test
@@ -62,6 +98,7 @@ class SchemaSync {
     var fetched = 0;
     var skipped = 0;
     String? error;
+    final sigParts = <String>[];
 
     try {
       final entries = await github.listDir(github.config.viewsPath);
@@ -77,6 +114,7 @@ class SchemaSync {
         }
         final out = File(p.join(tmpDir.path, e.name));
         out.writeAsStringSync(file.content);
+        sigParts.add('${e.name}:${e.sha ?? ''}');
         fetched++;
       }
     } catch (e) {
@@ -90,6 +128,12 @@ class SchemaSync {
       );
     }
 
+    // Record the signature of this fetch so the poller can detect future
+    // changes without re-downloading. Matches remoteSignature()'s format.
+    sigParts.sort();
+    final signature = sigParts.join('|');
+    File(p.join(tmpDir.path, _sigFileName)).writeAsStringSync(signature);
+
     // Swap tmp → final atomically (delete + rename).
     if (finalDir.existsSync()) finalDir.deleteSync(recursive: true);
     tmpDir.renameSync(finalDir.path);
@@ -99,6 +143,7 @@ class SchemaSync {
       skipped: skipped,
       error: null,
       when: DateTime.now(),
+      signature: signature,
     );
   }
 
@@ -117,11 +162,16 @@ class SchemaSyncResult {
   final String? error;
   final DateTime when;
 
+  /// Signature of the synced state (null on error). The poller stores this
+  /// to skip redundant refreshes until the repo changes again.
+  final String? signature;
+
   SchemaSyncResult({
     required this.fetched,
     required this.skipped,
     required this.error,
     required this.when,
+    this.signature,
   });
 
   bool get ok => error == null;

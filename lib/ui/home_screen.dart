@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../models/github_config.dart';
 import '../models/model_config.dart';
+import '../models/quickbooks_config.dart';
 import '../models/view_schema.dart';
 import '../services/analytics_engine.dart';
 import '../services/app_config.dart';
@@ -13,8 +16,10 @@ import '../services/github_client.dart';
 import '../services/icon_resolver.dart';
 import '../services/llm_client.dart';
 import '../services/llm_response_cache.dart';
+import '../services/qbo_service.dart';
 import '../services/schema_loader.dart';
 import '../services/schema_sync.dart';
+import '../services/transient_retry.dart';
 import '../services/warehouse_connector.dart';
 import 'apps_screen.dart';
 import 'chat_screen.dart';
@@ -41,22 +46,54 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late Future<_Bootstrap> _bootstrap;
 
+  /// Background GitHub poller. The app runs in always-open kiosk mode, so
+  /// schema changes can't ride in on a launch — this timer pulls them in
+  /// while the app is live. Null until the first bootstrap wires it up.
+  Timer? _syncTimer;
+
+  /// Signature of the schema state currently applied. The poller compares
+  /// the repo's signature against this to decide whether to re-sync.
+  String? _knownSig;
+
+  /// Reentrancy guard so overlapping ticks (slow network) don't stack.
+  bool _polling = false;
+
   @override
   void initState() {
     super.initState();
     _bootstrap = _initialize();
   }
 
+  @override
+  void dispose() {
+    _syncTimer?.cancel();
+    super.dispose();
+  }
+
   Future<_Bootstrap> _initialize() async {
     final assetConfig = await AppConfig.load();
     final packageInfo = await PackageInfo.fromPlatform();
 
+    // Start the background poller once (guarded — _initialize re-runs on
+    // every sync/reload). Seed _knownSig from the cache so a freshly
+    // launched app that's already current doesn't immediately re-sync.
+    final github = assetConfig.github;
+    if (_syncTimer == null && github != null && github.pollSeconds > 0) {
+      _knownSig = await SchemaSync.cachedSignature();
+      _syncTimer = Timer.periodic(
+        Duration(seconds: github.pollSeconds),
+        (_) => _pollGithub(github),
+      );
+    }
+
     final views = await SchemaLoader.loadAll();
     final keyJson =
         await rootBundle.loadString('assets/service-account.json');
-    final repo = await connectSheetsConnector(
-      defaultSpreadsheetId: assetConfig.spreadsheetId,
-      serviceAccountKeyJson: keyJson,
+    final repo = await retryTransient(
+      () => connectSheetsConnector(
+        defaultSpreadsheetId: assetConfig.spreadsheetId,
+        serviceAccountKeyJson: keyJson,
+      ),
     );
     final registry = await ConnectorRegistry.build(
       configs: const [],
@@ -68,7 +105,11 @@ class _HomeScreenState extends State<HomeScreen> {
     // headers — corrupts the underlying sheet and surfaces as a
     // "bad state: can't finalize a finalized request" mid-startup.
     for (final view in views.where((v) => v.hasInputOverlay)) {
-      await registry.forView(view).ensureTable(view);
+      // Wrap the first network-touching calls: the engine's reqwest client
+      // can hit a cold-start DNS failure on the first request after launch
+      // (see retryTransient). A few short retries ride out the window that
+      // a manual refresh would otherwise have to.
+      await retryTransient(() => registry.forView(view).ensureTable(view));
     }
     // disable_post_log in config.yml gates every piece of the LLM plumbing.
     // When set, we hand TimelineScreen `null` llm/cache so the post-log hook
@@ -100,7 +141,40 @@ class _HomeScreenState extends State<HomeScreen> {
       github: assetConfig.github,
       analytics: analytics,
       kioskView: assetConfig.kioskView,
+      quickbooks: assetConfig.quickbooks,
+      qboService: assetConfig.quickbooks == null
+          ? null
+          : QboService(assetConfig.quickbooks!),
     );
+  }
+
+  /// One poll tick: cheaply check whether the repo's schema state differs
+  /// from what's applied, and if so pull + rebuild. Silent (no snackbars)
+  /// — this runs unattended in kiosk mode. Skips entirely when the user
+  /// has anything pushed on top of the home/timeline (a form, dialog,
+  /// chat, app viewer): rebuilding then would tear down their in-progress
+  /// work. We simply retry on the next tick.
+  Future<void> _pollGithub(GithubConfig cfg) async {
+    if (_polling || !mounted) return;
+    if (Navigator.of(context).canPop()) return; // user is mid-task; defer
+    _polling = true;
+    try {
+      final sync = SchemaSync(GithubClient(cfg));
+      final remote = await sync.remoteSignature();
+      if (remote == null) return; // network/API hiccup — try next tick
+      if (remote == _knownSig) return; // nothing changed
+      final result = await sync.refresh();
+      if (!result.ok) return;
+      _knownSig = result.signature;
+      if (!mounted) return;
+      // Re-check before rebuilding: the user may have opened a form during
+      // the fetch. If so, the cache is already updated and the new schema
+      // applies on the next natural rebuild; don't yank the UI now.
+      if (Navigator.of(context).canPop()) return;
+      setState(() => _bootstrap = _initialize());
+    } finally {
+      _polling = false;
+    }
   }
 
   /// Pulls schemas/templates from GitHub, then rebuilds the view list
@@ -123,6 +197,7 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         return;
       }
+      _knownSig = result.signature;
       messenger.showSnackBar(
         SnackBar(
           content: Text(
@@ -175,13 +250,17 @@ class _HomeScreenState extends State<HomeScreen> {
           if (kioskView != null) {
             return TimelineScreen(
               view: kioskView,
-              repository: boot.repository,
+              repository: boot.registry.forView(kioskView),
               llm: boot.llm,
               llmCache: boot.llmCache,
               chatModel: null,
               github: null,
               analytics: boot.analytics,
               kioskMode: true,
+              qboSpec: boot.quickbooks?.specFor(kioskView.name),
+              qboService: boot.quickbooks?.specFor(kioskView.name) == null
+                  ? null
+                  : boot.qboService,
             );
           }
         }
@@ -239,7 +318,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   TodayDashboard(
                     views: entryViews,
                     registry: data.registry,
-                    repository: data.repository,
+                    quickbooks: data.quickbooks,
+                    qboService: data.qboService,
                   ),
                   Expanded(
                     child: ListView.separated(
@@ -280,7 +360,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             MaterialPageRoute(
                               builder: (_) => TimelineScreen(
                                 view: view,
-                                repository: data.repository,
+                                repository: data.registry.forView(view),
                                 llm: data.llm,
                                 llmCache: data.llmCache,
                                 chatModel: chatModel,
@@ -288,6 +368,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ? null
                                     : GithubClient(github),
                                 analytics: data.analytics,
+                                qboSpec: data.quickbooks?.specFor(view.name),
+                                qboService:
+                                    data.quickbooks?.specFor(view.name) == null
+                                        ? null
+                                        : data.qboService,
                               ),
                             ),
                           ),
@@ -334,6 +419,12 @@ class _Bootstrap {
   /// [AppConfig.kioskView].
   final String? kioskView;
 
+  /// QuickBooks config + shared push service. Null when the build has no
+  /// `quickbooks:` block. A view gets the "Update" button only when
+  /// [quickbooks] has a `specFor(view.name)`.
+  final QuickBooksConfig? quickbooks;
+  final QboService? qboService;
+
   _Bootstrap({
     required this.views,
     required this.repository,
@@ -345,6 +436,8 @@ class _Bootstrap {
     required this.github,
     required this.analytics,
     this.kioskView,
+    this.quickbooks,
+    this.qboService,
   });
 }
 

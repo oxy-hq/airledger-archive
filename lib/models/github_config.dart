@@ -24,12 +24,21 @@ class GithubConfig {
   /// Defaults to `views` since that's how airledger-fitness is laid out.
   final String viewsPath;
 
+  /// How often the running app polls the repo for schema changes, in
+  /// seconds. The app is deployed in always-open kiosk mode, so "sync on
+  /// launch" never fires — a background poller is the only way merged
+  /// changes propagate. 0 disables auto-sync (manual button only).
+  /// Default 300s (5 min): each poll is a single cheap API call when
+  /// nothing changed, so this is well within GitHub rate limits.
+  final int pollSeconds;
+
   GithubConfig({
     required this.token,
     required this.owner,
     required this.repo,
     this.defaultBranch = 'main',
     this.viewsPath = 'views',
+    this.pollSeconds = 300,
   });
 
   String get repoFullName => '$owner/$repo';
@@ -55,6 +64,7 @@ class GithubConfig {
       repo: repo,
       defaultBranch: (m['default_branch'] as String?) ?? 'main',
       viewsPath: (m['views_path'] as String?) ?? 'views',
+      pollSeconds: (m['poll_seconds'] as num?)?.toInt() ?? 300,
     );
   }
 }

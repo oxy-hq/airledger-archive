@@ -4,6 +4,7 @@ import 'bigquery_connector.dart';
 import 'clickhouse_connector.dart';
 import 'mysql_connector.dart';
 import 'postgres_connector.dart';
+import 'sqlite_ledger_connector.dart';
 import 'warehouse_connector.dart';
 
 /// Routes a `.view.yml`'s `datasource:` to a concrete [WarehouseConnector].
@@ -45,6 +46,13 @@ class ConnectorRegistry {
     if (bundledSheets != null && byName['gsheets'] == null) {
       byName['gsheets'] = bundledSheets;
     }
+    // Always expose a built-in on-device SQLite ledger under the well-known
+    // datasource name `sqlite_ledger`, so a view can opt into local-ledger
+    // storage with just `datasource: sqlite_ledger` — no config.yml entry
+    // required. A config-declared sqlite_ledger (above) wins via `??=`.
+    // Lazy: it opens `ledger.db` only on first read/write.
+    byName['sqlite_ledger'] ??=
+        SqliteLedgerConnector(const SqliteLedgerConfig(name: 'sqlite_ledger'));
     return ConnectorRegistry._(byName: byName, fallback: bundledSheets);
   }
 
@@ -77,6 +85,8 @@ class ConnectorRegistry {
       // Sheets uses the bundled connection — a fresh one would require auth,
       // which the bundled instance already holds.
       SheetsConfig() => bundledSheets ?? UnimplementedConnector(cfg),
+      // On-device SQLite ledger — no connection to open (lazy `ledger.db`).
+      SqliteLedgerConfig() => SqliteLedgerConnector(cfg),
       // Postgres family (postgres / redshift / airhouse share the wire
       // protocol). Redshift / Airhouse expose their PostgresConfig via
       // their `.postgres` getters.

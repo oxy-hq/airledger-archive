@@ -3,6 +3,7 @@ import 'package:yaml/yaml.dart';
 
 import '../models/github_config.dart';
 import '../models/model_config.dart';
+import '../models/quickbooks_config.dart';
 
 /// Runtime config bundled in the APK at `assets/config.yaml`.
 /// Baked at build time by `tool/brand.dart` from the schemas repo's
@@ -31,12 +32,18 @@ class AppConfig {
   /// `kiosk_view: <view_name>` in the repo `config.yml`.
   final String? kioskView;
 
+  /// Optional QuickBooks Online config — drives the "Update" push button +
+  /// per-transaction push-status badges. Null when the build has no
+  /// `quickbooks:` block; the feature stays inert.
+  final QuickBooksConfig? quickbooks;
+
   AppConfig({
     required this.spreadsheetId,
     required this.models,
     this.disablePostLog = false,
     this.github,
     this.kioskView,
+    this.quickbooks,
   });
 
   static Future<AppConfig> load() async {
@@ -69,6 +76,9 @@ class AppConfig {
           ? GithubConfig.fromYaml(_yamlMapToJson(node['github'] as YamlMap))
           : null,
       kioskView: node['kiosk_view'] as String?,
+      quickbooks: node['quickbooks'] is YamlMap
+          ? QuickBooksConfig.fromYaml(node['quickbooks'] as YamlMap)
+          : null,
     );
   }
 }

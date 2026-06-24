@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
+import '../models/quickbooks_config.dart';
 import '../models/view_schema.dart';
 import '../services/connector_registry.dart';
 import '../services/icon_resolver.dart';
+import '../services/qbo_service.dart';
 import '../services/warehouse_connector.dart';
 import 'timeline_screen.dart';
 
@@ -19,13 +20,19 @@ import 'timeline_screen.dart';
 class TodayDashboard extends StatefulWidget {
   final List<ViewSchema> views;
   final ConnectorRegistry registry;
-  final WarehouseConnector repository;
+
+  /// QBO config + push service, threaded through so a QBO-mapped view
+  /// opened from a pill still gets the Update button + badges. Null when
+  /// the build has no `quickbooks:` block.
+  final QuickBooksConfig? quickbooks;
+  final QboService? qboService;
 
   const TodayDashboard({
     super.key,
     required this.views,
     required this.registry,
-    required this.repository,
+    this.quickbooks,
+    this.qboService,
   });
 
   @override
@@ -104,7 +111,12 @@ class _TodayDashboardState extends State<TodayDashboard> {
                         view: view,
                         count: snap.data?[view.name],
                         loading: !snap.hasData,
-                        repository: widget.repository,
+                        repository: widget.registry.forView(view),
+                        qboSpec: widget.quickbooks?.specFor(view.name),
+                        qboService:
+                            widget.quickbooks?.specFor(view.name) == null
+                                ? null
+                                : widget.qboService,
                       ),
                       const SizedBox(width: 8),
                     ],
@@ -124,12 +136,16 @@ class _StatPill extends StatelessWidget {
   final int? count;
   final bool loading;
   final WarehouseConnector repository;
+  final QboPushSpec? qboSpec;
+  final QboService? qboService;
 
   const _StatPill({
     required this.view,
     required this.count,
     required this.loading,
     required this.repository,
+    this.qboSpec,
+    this.qboService,
   });
 
   @override
@@ -146,6 +162,8 @@ class _StatPill extends StatelessWidget {
           builder: (_) => TimelineScreen(
             view: view,
             repository: repository,
+            qboSpec: qboSpec,
+            qboService: qboService,
             // Dashboard navigation doesn't need an LLM client — the
             // timeline gracefully skips the post-log hook when one
             // isn't provided.

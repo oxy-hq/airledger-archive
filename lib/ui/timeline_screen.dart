@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -7,10 +9,14 @@ import 'package:jinja/jinja.dart' hide Template;
 
 import '../models/model_config.dart';
 import '../models/planned_entry.dart';
+import '../models/quickbooks_config.dart';
 import '../models/view_schema.dart';
 import '../services/analytics_engine.dart';
 import '../models/template.dart';
 import '../services/derive.dart';
+import '../services/qbo_push_store.dart';
+import '../services/qbo_service.dart';
+import '../services/row_cache.dart';
 import '../services/template_interpolator.dart';
 import '../services/template_loader.dart';
 import '../services/github_client.dart';
@@ -114,6 +120,13 @@ class TimelineScreen extends StatefulWidget {
   /// because the timeline IS the root.
   final bool kioskMode;
 
+  /// When non-null, this view pushes its transactions to QuickBooks as
+  /// inventory-quantity changes. Drives the app-bar "Update" button and the
+  /// per-row push-status badges. Both null together (the feature is inert
+  /// unless config.yml declares a `quickbooks:` mapping for this view).
+  final QboPushSpec? qboSpec;
+  final QboService? qboService;
+
   const TimelineScreen({
     super.key,
     required this.view,
@@ -124,6 +137,8 @@ class TimelineScreen extends StatefulWidget {
     this.github,
     this.analytics,
     this.kioskMode = false,
+    this.qboSpec,
+    this.qboService,
   });
 
   @override
@@ -133,6 +148,9 @@ class TimelineScreen extends StatefulWidget {
 class _TimelineScreenState extends State<TimelineScreen> {
   DateTime _selectedDate = _today();
   late Future<List<_Item>> _items;
+  // date_keys with an in-flight background revalidation, so rapid date
+  // toggling doesn't stack redundant network reads.
+  final Set<String> _revalidating = {};
   // Multiselect state — populated only while selection mode is active. We key
   // by `_Item.keyString` so the set survives _reload() (where _Item instances
   // are rebuilt) for any items that still exist.
@@ -168,6 +186,18 @@ class _TimelineScreenState extends State<TimelineScreen> {
   /// timeline rebuilds (LLM cache update, etc.).
   final Set<String> _expandedLoggedKeys = {};
 
+  /// Per-transaction QuickBooks push status, keyed by row `id`. Empty
+  /// (and unused) unless this view has a [TimelineScreen.qboSpec]. An id
+  /// absent from the map renders as pending. Refreshed after each load and
+  /// after a push.
+  Map<String, QboPushRecord> _qboStatus = {};
+
+  /// True while an Update (push-to-QBO) drain is running — gates the button.
+  bool _qboPushing = false;
+
+  bool get _qboEnabled =>
+      widget.qboSpec != null && widget.qboService != null;
+
   void _toggleExpand(String key) {
     setState(() {
       if (!_expandedLoggedKeys.add(key)) _expandedLoggedKeys.remove(key);
@@ -187,7 +217,87 @@ class _TimelineScreenState extends State<TimelineScreen> {
     _items = _fetch();
     _loadLoggedDates();
     _loadTemplates();
+    _loadQboStatuses();
     widget.llmCache?.addListener(_onLlmUpdate);
+  }
+
+  /// Refreshes [_qboStatus] for the logged rows currently in [_items].
+  /// No-op when the view isn't QBO-mapped. Best-effort + silent.
+  Future<void> _loadQboStatuses() async {
+    if (!_qboEnabled) return;
+    try {
+      final items = await _items;
+      final ids = <String>[
+        for (final it in items)
+          if (it.isLogged)
+            for (final r in it.batchRows ?? [it.logged!])
+              if (r['id'] != null) r['id'].toString(),
+      ];
+      if (ids.isEmpty) return;
+      final statuses =
+          await widget.qboService!.statusesFor(widget.view.name, ids);
+      if (!mounted) return;
+      setState(() => _qboStatus = statuses);
+    } catch (_) {/* badges just stay as-is */}
+  }
+
+  /// Pushes every not-yet-pushed transaction for this view to QuickBooks as
+  /// an inventory-quantity change. Surfaces a summary via snackbar and
+  /// refreshes the per-row badges. Serialized in the service layer.
+  Future<void> _pushToQbo() async {
+    if (!_qboEnabled || _qboPushing) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _qboPushing = true);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Pushing to QuickBooks…'),
+        duration: Duration(seconds: 30),
+      ),
+    );
+    try {
+      // Push across all dates for the view, not just the selected day — the
+      // ledger is the source of pending transactions.
+      final rows = await widget.repository.list(widget.view);
+      final summary =
+          await widget.qboService!.pushPending(widget.view, widget.qboSpec!, rows);
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'QuickBooks: ${summary.pushed} pushed'
+            '${summary.failed > 0 ? ', ${summary.failed} failed' : ''}'
+            '${summary.skipped > 0 ? ', ${summary.skipped} skipped' : ''}',
+          ),
+        ),
+      );
+      await _loadQboStatuses();
+    } catch (e) {
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text('Push failed: $e')));
+    } finally {
+      if (mounted) setState(() => _qboPushing = false);
+    }
+  }
+
+  /// Retry a single failed/pending transaction (tapping its badge).
+  Future<void> _retryQbo(Record row) async {
+    if (!_qboEnabled || _qboPushing) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _qboPushing = true);
+    try {
+      final ok =
+          await widget.qboService!.pushOne(widget.view, widget.qboSpec!, row);
+      await _loadQboStatuses();
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(
+        content: Text(ok ? 'Pushed to QuickBooks' : 'Push failed'),
+        duration: const Duration(milliseconds: 1200),
+      ));
+    } finally {
+      if (mounted) setState(() => _qboPushing = false);
+    }
   }
 
   Future<void> _loadTemplates() async {
@@ -235,7 +345,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
           duration: const Duration(milliseconds: 800),
         ),
       );
-      _reload();
+      _reload(fresh: true);
     } catch (e) {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text('Start failed: $e')));
@@ -263,7 +373,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
           duration: const Duration(milliseconds: 800),
         ),
       );
-      _reload();
+      _reload(fresh: true);
     } catch (e) {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text('Finish failed: $e')));
@@ -299,26 +409,38 @@ class _TimelineScreenState extends State<TimelineScreen> {
   /// Best-effort fetch of every distinct date the view has data for. Drives
   /// the calendar markers. Re-run after any write so freshly-logged days
   /// appear. Silent on failure — the calendar just shows no markers.
+  ///
+  /// Cache-first: paint markers instantly from the cached all-rows bucket,
+  /// then refresh it from the sheet in the background. This is a full-table
+  /// scan, so serving the cache first keeps it off the open/reload path.
   Future<void> _loadLoggedDates() async {
     if (widget.view.dateField == null) return;
+    final cached = await RowCache.get(widget.view, RowCache.allDatesKey);
+    if (cached != null) _applyLoggedDates(cached);
     try {
       final rows = await widget.repository.list(widget.view);
+      await RowCache.put(widget.view, RowCache.allDatesKey, rows);
       if (!mounted) return;
-      final dates = <DateTime>{};
-      for (final r in rows) {
-        final v = r[widget.view.dateField];
-        DateTime? dt;
-        if (v is DateTime) dt = v;
-        if (v is String) dt = DateTime.tryParse(v);
-        if (dt != null) {
-          dates.add(DateTime(dt.year, dt.month, dt.day));
-        }
-      }
-      setState(() => _loggedDates = dates);
+      _applyLoggedDates(rows);
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || cached != null) return;
       setState(() => _loggedDates = const {});
     }
+  }
+
+  void _applyLoggedDates(List<Record> rows) {
+    final dates = <DateTime>{};
+    for (final r in rows) {
+      final v = r[widget.view.dateField];
+      DateTime? dt;
+      if (v is DateTime) dt = v;
+      if (v is String) dt = DateTime.tryParse(v);
+      if (dt != null) {
+        dates.add(DateTime(dt.year, dt.month, dt.day));
+      }
+    }
+    if (!mounted) return;
+    setState(() => _loggedDates = dates);
   }
 
   @override
@@ -331,10 +453,64 @@ class _TimelineScreenState extends State<TimelineScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<List<_Item>> _fetch() async {
-    final logged = widget.view.dateField == null
-        ? await widget.repository.list(widget.view)
-        : await widget.repository.list(widget.view, onDate: _selectedDate);
+  /// Cache key for the current view+date. Date-scoped views key by the
+  /// selected day; dateless views share the single all-rows bucket.
+  String _dateKey() => widget.view.dateField == null
+      ? RowCache.allDatesKey
+      : DateFormat('yyyy-MM-dd').format(_selectedDate);
+
+  /// Live read of the logged rows from the warehouse for the current date.
+  Future<List<Record>> _listFromSheet() => widget.view.dateField == null
+      ? widget.repository.list(widget.view)
+      : widget.repository.list(widget.view, onDate: _selectedDate);
+
+  /// Loads the timeline items. Stale-while-revalidate by default: if the
+  /// row cache has this date, assemble + return it immediately and kick
+  /// off a background refresh ([_revalidate]) that updates the UI only if
+  /// the sheet differs. [forceFresh] skips the cache entirely — used after
+  /// writes and on explicit Refresh so you always see confirmed state.
+  Future<List<_Item>> _fetch({bool forceFresh = false}) async {
+    final dateKey = _dateKey();
+    if (!forceFresh) {
+      final cached = await RowCache.get(widget.view, dateKey);
+      if (cached != null) {
+        unawaited(_revalidate(dateKey));
+        return _assemble(cached);
+      }
+    }
+    final fresh = await _listFromSheet();
+    await RowCache.put(widget.view, dateKey, fresh);
+    return _assemble(fresh);
+  }
+
+  /// Background refresh behind a cache hit: re-fetch from the sheet, update
+  /// the cache, and rebuild the timeline only if the rows actually changed
+  /// (so a no-op refresh doesn't reset scroll/expansion). Failures keep the
+  /// already-shown cached data — the sheet just isn't reachable right now.
+  Future<void> _revalidate(String dateKey) async {
+    if (!_revalidating.add(dateKey)) return;
+    try {
+      final before = await RowCache.get(widget.view, dateKey);
+      final fresh = await _listFromSheet();
+      await RowCache.put(widget.view, dateKey, fresh);
+      if (!mounted || dateKey != _dateKey()) return;
+      final changed = before == null ||
+          RowCache.signature(widget.view, before) !=
+              RowCache.signature(widget.view, fresh);
+      if (!changed) return;
+      final items = await _assemble(fresh);
+      if (!mounted || dateKey != _dateKey()) return;
+      setState(() => _items = Future.value(items));
+    } catch (_) {
+      // keep serving cached data
+    } finally {
+      _revalidating.remove(dateKey);
+    }
+  }
+
+  /// Merges planned (local) entries with logged (sheet) rows and folds
+  /// repeat-group batches. Pure assembly over an already-fetched row list.
+  Future<List<_Item>> _assemble(List<Record> logged) async {
     final planned = await PlanStore.loadForDate(widget.view, _selectedDate);
 
     // Batch grouping: when the view declares a repeat_group with a
@@ -370,11 +546,15 @@ class _TimelineScreenState extends State<TimelineScreen> {
     ];
   }
 
-  void _reload() {
+  /// Reloads the timeline. [fresh] forces a cache-bypassing fetch (after
+  /// writes / explicit Refresh); default is cache-first stale-while-
+  /// revalidate (screen open, date navigation).
+  void _reload({bool fresh = false}) {
     setState(() {
-      _items = _fetch();
+      _items = _fetch(forceFresh: fresh);
     });
     _loadLoggedDates();
+    _loadQboStatuses();
   }
 
   @override
@@ -492,6 +672,9 @@ class _TimelineScreenState extends State<TimelineScreen> {
                             final item = plannedRows[i] as _Item;
                             final selected =
                                 _selectedKeys.contains(item.keyString);
+                            final qboId = _qboEnabled
+                                ? item.values['id']?.toString()
+                                : null;
                             return _RecordTile(
                               view: widget.view,
                               item: item,
@@ -499,6 +682,11 @@ class _TimelineScreenState extends State<TimelineScreen> {
                               selectionMode: _selectionMode,
                               llmCache: widget.llmCache,
                               repository: widget.repository,
+                              qboStatus:
+                                  qboId == null ? null : _qboStatus[qboId],
+                              onQboRetry: qboId == null
+                                  ? null
+                                  : () => _retryQbo(item.values),
                               onTap: _selectionMode
                                   ? () => _toggleSelect(item)
                                   : () => _edit(item),
@@ -561,9 +749,23 @@ class _TimelineScreenState extends State<TimelineScreen> {
           onPressed: _openTemplates,
           tooltip: 'Templates',
         ),
+        // "Update": push not-yet-pushed transactions to QuickBooks as
+        // inventory changes. Only shown when this view is QBO-mapped.
+        if (_qboEnabled)
+          IconButton(
+            icon: _qboPushing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.cloud_upload_outlined),
+            onPressed: _qboPushing ? null : _pushToQbo,
+            tooltip: 'Update QuickBooks',
+          ),
         IconButton(
           icon: const Icon(Icons.refresh),
-          onPressed: _reload,
+          onPressed: () => _reload(fresh: true),
           tooltip: 'Refresh',
         ),
       ],
@@ -672,7 +874,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
         ),
       ),
     );
-    if (saved == true) _reload();
+    if (saved == true) _reload(fresh: true);
   }
 
   /// Move a logged entry (single row or whole batch) to a different
@@ -707,7 +909,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
       }
       if (!mounted) return;
       setState(() => _expandedLoggedKeys.remove(item.keyString));
-      _reload();
+      _reload(fresh: true);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -747,7 +949,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
           ),
         ),
       );
-      if (saved == true) _reload();
+      if (saved == true) _reload(fresh: true);
     }
   }
 
@@ -805,12 +1007,17 @@ class _TimelineScreenState extends State<TimelineScreen> {
           await widget.repository.delete(widget.view, item.logged!);
         }
       }
+      // The optimistic list is correct on screen, but the row cache still
+      // holds the deleted rows (and remaining rows' __row indices have
+      // shifted in the sheet). Silently re-sync from truth in the
+      // background — no spinner, since the UI already shows `remaining`.
+      unawaited(_revalidate(_dateKey()));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Delete failed: $e — refreshing')),
       );
-      _reload();
+      _reload(fresh: true);
     }
   }
 
@@ -915,12 +1122,15 @@ class _TimelineScreenState extends State<TimelineScreen> {
       try {
         await widget.repository.create(widget.view, values);
         await PlanStore.remove(widget.view, planned.localId);
+        // UI shows the optimistic row; re-sync the cache (new row + shifted
+        // __row indices) from truth in the background, no spinner.
+        unawaited(_revalidate(_dateKey()));
       } catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Log failed: $e — refreshing')),
         );
-        _reload();
+        _reload(fresh: true);
         return;
       }
     } finally {
@@ -1526,6 +1736,12 @@ class _RecordTile extends StatelessWidget {
   final LlmResponseCache? llmCache;
   final WarehouseConnector repository;
 
+  /// QuickBooks push status for this row (null when the view isn't
+  /// QBO-mapped). Drives the trailing badge. [onQboRetry] pushes just this
+  /// row (used for pending/failed badges).
+  final QboPushRecord? qboStatus;
+  final VoidCallback? onQboRetry;
+
   const _RecordTile({
     required this.view,
     required this.item,
@@ -1537,6 +1753,8 @@ class _RecordTile extends StatelessWidget {
     required this.onLogNow,
     required this.repository,
     this.llmCache,
+    this.qboStatus,
+    this.onQboRetry,
   });
 
   /// First dimension on the view opted-in to `input.history: true` whose
@@ -1556,6 +1774,16 @@ class _RecordTile extends StatelessWidget {
 
   Widget? _buildTrailing(BuildContext context) {
     if (selectionMode) return null;
+    final badge = _qboBadge(context);
+    final history = _historyButton(context);
+    if (badge == null && history == null) return null;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [?badge, ?history],
+    );
+  }
+
+  Widget? _historyButton(BuildContext context) {
     final t = _historyTarget();
     if (t == null) return null;
     return IconButton(
@@ -1569,6 +1797,44 @@ class _RecordTile extends StatelessWidget {
         repository: repository,
       ),
     );
+  }
+
+  /// Trailing badge showing this transaction's QuickBooks push status.
+  /// Pending/failed badges are tappable to push just this row.
+  Widget? _qboBadge(BuildContext context) {
+    if (!item.isLogged || qboStatus == null) return null;
+    final scheme = Theme.of(context).colorScheme;
+    switch (qboStatus!.status) {
+      case QboPushStatus.pushed:
+        return const Tooltip(
+          message: 'Pushed to QuickBooks',
+          child: Padding(
+            padding: EdgeInsets.all(8),
+            child: Icon(Icons.cloud_done, size: 18, color: Colors.green),
+          ),
+        );
+      case QboPushStatus.pushing:
+        return const Padding(
+          padding: EdgeInsets.all(9),
+          child: SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        );
+      case QboPushStatus.failed:
+        return IconButton(
+          icon: Icon(Icons.error_outline, size: 18, color: scheme.error),
+          tooltip: qboStatus!.error ?? 'Push failed — tap to retry',
+          onPressed: onQboRetry,
+        );
+      case QboPushStatus.pending:
+        return IconButton(
+          icon: Icon(Icons.cloud_queue, size: 18, color: scheme.outline),
+          tooltip: 'Not pushed yet — tap to push',
+          onPressed: onQboRetry,
+        );
+    }
   }
 
   @override
@@ -2257,7 +2523,7 @@ class _FullscreenBatchScreenState extends State<_FullscreenBatchScreen> {
   }
 
   Future<void> _refreshItems() async {
-    setState(() => _items = widget.host._fetch());
+    setState(() => _items = widget.host._fetch(forceFresh: true));
   }
 
   Future<void> _startBatch(Template t) async {

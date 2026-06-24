@@ -37,6 +37,7 @@ sealed class DatabaseConfig {
     }
     return switch (type) {
       'sheets' => SheetsConfig.fromJson(name, json),
+      'sqlite_ledger' => SqliteLedgerConfig.fromJson(name, json),
       'bigquery' => BigQueryConfig.fromJson(name, json),
       'duckdb' => DuckDBConfig.fromJson(name, json),
       'snowflake' => SnowflakeConfig.fromJson(name, json),
@@ -79,6 +80,20 @@ class SheetsConfig extends DatabaseConfig {
         spreadsheetIdVar: j['spreadsheet_id_var'] as String?,
         serviceAccountKeyPath: j['service_account_key_path'] as String?,
       );
+}
+
+/// On-device SQLite ledger — airledger's local durable store, the
+/// pluggable alternative to Sheets. No connection fields: the connector
+/// owns a single `ledger.db` in the app documents dir. Not in oxy's enum
+/// (it's a transactional store, like sheets).
+class SqliteLedgerConfig extends DatabaseConfig {
+  const SqliteLedgerConfig({required super.name});
+
+  @override
+  String get typeName => 'sqlite_ledger';
+
+  factory SqliteLedgerConfig.fromJson(String name, Map<String, dynamic> _) =>
+      SqliteLedgerConfig(name: name);
 }
 
 class PostgresConfig extends DatabaseConfig {
